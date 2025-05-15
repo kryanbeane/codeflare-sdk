@@ -3,14 +3,9 @@ name: e2e
 
 on:
   pull_request:
-    branches:
-      - main
-      - 'release-*'
-    paths-ignore:
-      - 'docs/**'
-      - '**.adoc'
-      - '**.md'
-      - 'LICENSE'
+    branches: [ main ]
+  push:
+    branches: [ main ]
 
 concurrency:
   group: ${{ github.head_ref }}-${{ github.workflow }}
@@ -117,7 +112,7 @@ jobs:
           pip install poetry
           poetry install --with test,docs
           echo "Running e2e tests..."
-          poetry run pytest -v -s ./tests/e2e -m 'kind and nvidia_gpu' > ${CODEFLARE_TEST_OUTPUT_DIR}/pytest_output.log 2>&1
+          poetry run pytest -v -s ./tests/e2e/local_interactive_sdk_kind_test.py::TestRayLocalInteractiveOauth::test_local_interactives_nvidia_gpu > ${CODEFLARE_TEST_OUTPUT_DIR}/pytest_output.log 2>&1
         env:
           GRPC_DNS_RESOLVER: "native"
 

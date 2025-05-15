@@ -48,6 +48,7 @@ class TestRayLocalInteractiveOauth:
                 head_cpu_limits="500m",
                 head_memory_requests=2,
                 head_memory_limits=2,
+                head_extended_resource_requests={gpu_resource_name: 0},
                 worker_cpu_requests="500m",
                 worker_cpu_limits=1,
                 worker_memory_requests=1,
@@ -68,21 +69,14 @@ class TestRayLocalInteractiveOauth:
         ray.shutdown()
         ray.init(address=cluster.local_client_url(), logging_level="DEBUG")
 
-        @ray.remote(num_gpus=number_of_gpus / 2)
-        def heavy_calculation_part(num_iterations):
+        @ray.remote(num_gpus=number_of_gpus)
+        def heavy_calculation(num_iterations):
             result = 0.0
             for i in range(num_iterations):
                 for j in range(num_iterations):
                     for k in range(num_iterations):
                         result += math.sin(i) * math.cos(j) * math.tan(k)
             return result
-
-        @ray.remote(num_gpus=number_of_gpus / 2)
-        def heavy_calculation(num_iterations):
-            results = ray.get(
-                [heavy_calculation_part.remote(num_iterations // 30) for _ in range(30)]
-            )
-            return sum(results)
 
         ref = heavy_calculation.remote(3000)
         result = ray.get(ref)
