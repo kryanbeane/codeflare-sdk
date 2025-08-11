@@ -20,8 +20,9 @@ import logging
 from typing import Dict, Any, Optional, Tuple
 from python_client.kuberay_job_api import RayjobApi
 
-from ..cluster.config import ClusterConfiguration
-from ..cluster.build_ray_cluster import build_ray_cluster
+from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+
+from .build_ray_cluster_spec import build_ray_cluster_spec
 from ...common.utils import get_current_namespace
 
 from .status import (
@@ -46,12 +47,14 @@ class RayJob:
     def __init__(
         self,
         job_name: str,
+        entrypoint: str,
         cluster_name: Optional[str] = None,
-        cluster_config: Optional[ClusterConfiguration] = None,
+        cluster_config: Optional[RayJobClusterConfig] = None,
         namespace: Optional[str] = None,
-        entrypoint: Optional[str] = None,
         runtime_env: Optional[Dict[str, Any]] = None,
-        shutdown_after_job_finishes: bool = True,
+        shutdown_after_job_finishes: Optional[
+            bool
+        ] = None,  # User can override auto-detection
         ttl_seconds_after_finished: int = 0,
         active_deadline_seconds: Optional[int] = None,
     ):
@@ -60,14 +63,20 @@ class RayJob:
 
         Args:
             job_name: The name for the Ray job
+            entrypoint: The Python script or command to run (required)
             cluster_name: The name of an existing Ray cluster (optional if cluster_config provided)
             cluster_config: Configuration for creating a new cluster (optional if cluster_name provided)
-            namespace: The Kubernetes namespace
-            entrypoint: The Python script or command to run (required for submission)
+            namespace: The Kubernetes namespace (auto-detected if not specified)
             runtime_env: Ray runtime environment configuration (optional)
-            shutdown_after_job_finishes: Whether to automatically cleanup the cluster after job completion (default: True)
+            shutdown_after_job_finishes: Whether to shut down cluster after job finishes (optional)
             ttl_seconds_after_finished: Seconds to wait before cleanup after job finishes (default: 0)
             active_deadline_seconds: Maximum time the job can run before being terminated (optional)
+
+        Note:
+            shutdown_after_job_finishes is automatically detected but can be overridden:
+            - True if cluster_config is provided (new cluster will be cleaned up)
+            - False if cluster_name is provided (existing cluster will not be shut down)
+            - User can explicitly set this value to override auto-detection
         """
         # Validate input parameters
         if cluster_name is None and cluster_config is None:
@@ -79,9 +88,22 @@ class RayJob:
         self.name = job_name
         self.entrypoint = entrypoint
         self.runtime_env = runtime_env
-        self.shutdown_after_job_finishes = shutdown_after_job_finishes
         self.ttl_seconds_after_finished = ttl_seconds_after_finished
         self.active_deadline_seconds = active_deadline_seconds
+
+        # Auto-set shutdown_after_job_finishes based on cluster_config presence
+        # If cluster_config is provided, we want to clean up the cluster after job finishes
+        # If using existing cluster, we don't want to shut it down
+        # User can override this behavior by explicitly setting shutdown_after_job_finishes
+        if shutdown_after_job_finishes is not None:
+            # User explicitly set the value
+            self.shutdown_after_job_finishes = shutdown_after_job_finishes
+        elif cluster_config is not None:
+            # Auto-detect: new cluster should be cleaned up
+            self.shutdown_after_job_finishes = True
+        else:
+            # Auto-detect: existing cluster should not be shut down
+            self.shutdown_after_job_finishes = False
 
         if namespace is None:
             detected_namespace = get_current_namespace()
@@ -186,9 +208,16 @@ class RayJob:
 
         # Configure cluster: either use existing or create new
         if self._cluster_config is not None:
-            # Use rayClusterSpec to create a new cluster - leverage existing build logic
-            ray_cluster_spec = self._build_ray_cluster_spec()
+            ray_cluster_spec = build_ray_cluster_spec(
+                cluster_config=self._cluster_config
+            )
+
+            logger.info(
+                f"Built RayCluster spec using RayJob-specific builder for cluster: {self.cluster_name}"
+            )
+
             rayjob_cr["spec"]["rayClusterSpec"] = ray_cluster_spec
+
             logger.info(f"RayJob will create new cluster: {self.cluster_name}")
         else:
             # Use clusterSelector to reference existing cluster
@@ -196,51 +225,6 @@ class RayJob:
             logger.info(f"RayJob will use existing cluster: {self.cluster_name}")
 
         return rayjob_cr
-
-    def _build_ray_cluster_spec(self) -> Dict[str, Any]:
-        """
-        Build the RayCluster spec from ClusterConfiguration using existing build_ray_cluster logic.
-
-        Returns:
-            Dict containing the RayCluster spec for embedding in RayJob
-        """
-        if not self._cluster_config:
-            raise RuntimeError("No cluster configuration provided")
-
-        # Create a shallow copy of the cluster config to avoid modifying the original
-        import copy
-
-        temp_config = copy.copy(self._cluster_config)
-
-        # Ensure we get a RayCluster (not AppWrapper) and don't write to file
-        temp_config.appwrapper = False
-        temp_config.write_to_file = False
-
-        # Create a minimal Cluster object for the build process
-        from ..cluster.cluster import Cluster
-
-        temp_cluster = Cluster.__new__(Cluster)  # Create without calling __init__
-        temp_cluster.config = temp_config
-
-        """
-        For now, RayJob with a new/auto-created cluster will not work with Kueue.
-        This is due to the Kueue label not being propagated to the RayCluster.
-        """
-
-        # Use the existing build_ray_cluster function to generate the RayCluster
-        ray_cluster_dict = build_ray_cluster(temp_cluster)
-
-        # Extract just the RayCluster spec - RayJob CRD doesn't support metadata in rayClusterSpec
-        # Note: CodeFlare Operator should still create dashboard routes for the RayCluster
-        ray_cluster_spec = ray_cluster_dict["spec"]
-
-        # Override imagePullPolicy to "IfNotPresent" for RayJob RayCluster specs
-        self._override_image_pull_policy(ray_cluster_spec)
-
-        logger.info(
-            f"Built RayCluster spec using existing build logic for cluster: {self.cluster_name}"
-        )
-        return ray_cluster_spec
 
     def status(
         self, print_to_console: bool = True
@@ -310,32 +294,4 @@ class RayJob:
 
         return status_mapping.get(
             deployment_status, (CodeflareRayJobStatus.UNKNOWN, False)
-        )
-
-    def _override_image_pull_policy(self, ray_cluster_spec: Dict[str, Any]) -> None:
-        """
-        Override the imagePullPolicy to "IfNotPresent" for all containers in the RayCluster spec.
-        This is specifically for RayJob RayCluster specs as requested.
-        """
-        # Update head group containers
-        if (
-            "headGroupSpec" in ray_cluster_spec
-            and "template" in ray_cluster_spec["headGroupSpec"]
-        ):
-            head_template = ray_cluster_spec["headGroupSpec"]["template"]
-            if "spec" in head_template and "containers" in head_template["spec"]:
-                for container in head_template["spec"]["containers"]:
-                    container["imagePullPolicy"] = "IfNotPresent"
-
-        # Update worker group containers
-        if "workerGroupSpecs" in ray_cluster_spec:
-            for worker_group in ray_cluster_spec["workerGroupSpecs"]:
-                if "template" in worker_group and "spec" in worker_group["template"]:
-                    worker_template = worker_group["template"]
-                    if "containers" in worker_template["spec"]:
-                        for container in worker_template["spec"]["containers"]:
-                            container["imagePullPolicy"] = "IfNotPresent"
-
-        logger.debug(
-            "Updated imagePullPolicy to 'IfNotPresent' for all containers in RayCluster spec"
         )

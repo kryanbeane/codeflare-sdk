@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-The config sub-module contains the definition of the ClusterConfigurationV2V2 dataclass,
+The config sub-module contains the definition of the RayJobClusterConfigV2 dataclass,
 which is used to specify resource requirements and other details when creating a
 Cluster object.
 """
@@ -27,7 +27,7 @@ from kubernetes.client import V1Toleration, V1Volume, V1VolumeMount
 dir = pathlib.Path(__file__).parent.parent.resolve()
 
 # https://docs.ray.io/en/latest/ray-core/scheduling/accelerators.html
-DEFAULT_RESOURCE_MAPPING = {
+DEFAULT_ACCELERATORS = {
     "nvidia.com/gpu": "GPU",
     "intel.com/gpu": "GPU",
     "amd.com/gpu": "GPU",
@@ -40,7 +40,7 @@ DEFAULT_RESOURCE_MAPPING = {
 
 
 @dataclass
-class ClusterConfigurationV2:
+class RayJobClusterConfig:
     """
     This dataclass is used to specify resource requirements and other details, and
     is passed in as an argument when creating a Cluster object.
@@ -50,11 +50,7 @@ class ClusterConfigurationV2:
             The name of the cluster.
         namespace:
             The namespace in which the cluster should be created.
-        head_cpus:
-            The number of CPUs to allocate to the head node.
-        head_memory:
-            The amount of memory to allocate to the head node.
-        head_extended_resource_requests:
+        head_accelerators:
             A dictionary of extended resource requests for the head node. ex: {"nvidia.com/gpu": 1}
         head_tolerations:
             List of tolerations for head nodes.
@@ -70,18 +66,15 @@ class ClusterConfigurationV2:
             The image to use for the cluster.
         image_pull_secrets:
             A list of image pull secrets to use for the cluster.
-        write_to_file:
-            A boolean indicating whether to write the cluster configuration to a file.
-        verify_tls:
-            A boolean indicating whether to verify TLS when connecting to the cluster.
         labels:
             A dictionary of labels to apply to the cluster.
-        worker_extended_resource_requests:
+        worker_accelerators:
             A dictionary of extended resource requests for each worker. ex: {"nvidia.com/gpu": 1}
-        extended_resource_mapping:
-            A dictionary of custom resource mappings to map extended resource requests to RayCluster resource names
-        overwrite_default_resource_mapping:
-            A boolean indicating whether to overwrite the default resource mapping.
+        accelerator_configs:
+            A dictionary of custom resource mappings to map extended resource requests to RayCluster resource names.
+            Defaults to DEFAULT_ACCELERATORS but can be overridden with custom mappings.
+        local_queue:
+            The name of the queue to use for the cluster.
         annotations:
             A dictionary of annotations to apply to the cluster.
         volumes:
@@ -104,13 +97,9 @@ class ClusterConfigurationV2:
     namespace: Optional[str] = None
     head_cpu_requests: Union[int, str] = 2
     head_cpu_limits: Union[int, str] = 2
-    head_cpus: Optional[Union[int, str]] = None  # Deprecating
     head_memory_requests: Union[int, str] = 8
     head_memory_limits: Union[int, str] = 8
-    head_memory: Optional[Union[int, str]] = None  # Deprecating
-    head_extended_resource_requests: Dict[str, Union[str, int]] = field(
-        default_factory=dict
-    )
+    head_accelerators: Dict[str, Union[str, int]] = field(default_factory=dict)
     head_tolerations: Optional[List[V1Toleration]] = None
     worker_cpu_requests: Union[int, str] = 1
     worker_cpu_limits: Union[int, str] = 1
@@ -122,14 +111,11 @@ class ClusterConfigurationV2:
     envs: Dict[str, str] = field(default_factory=dict)
     image: str = ""
     image_pull_secrets: List[str] = field(default_factory=list)
-    write_to_file: bool = False
-    verify_tls: bool = True
     labels: Dict[str, str] = field(default_factory=dict)
-    worker_extended_resource_requests: Dict[str, Union[str, int]] = field(
-        default_factory=dict
+    worker_accelerators: Dict[str, Union[str, int]] = field(default_factory=dict)
+    accelerator_configs: Dict[str, str] = field(
+        default_factory=lambda: DEFAULT_ACCELERATORS.copy()
     )
-    extended_resource_mapping: Dict[str, str] = field(default_factory=dict)
-    overwrite_default_resource_mapping: bool = False
     local_queue: Optional[str] = None
     annotations: Dict[str, str] = field(default_factory=dict)
     volumes: list[V1Volume] = field(default_factory=list)
@@ -141,11 +127,6 @@ class ClusterConfigurationV2:
     external_storage_namespace: Optional[str] = None
 
     def __post_init__(self):
-        if not self.verify_tls:
-            print(
-                "Warning: TLS verification has been disabled - Endpoint checks will be bypassed"
-            )
-
         if self.enable_usage_stats:
             self.envs["RAY_USAGE_STATS_ENABLED"] = "1"
         else:
@@ -173,54 +154,16 @@ class ClusterConfigurationV2:
                 )
 
         self._validate_types()
-        self._memory_to_resource()
         self._memory_to_string()
-        self._str_mem_no_unit_add_GB()
-        self._cpu_to_resource()
-        self._combine_extended_resource_mapping()
-        self._validate_extended_resource_requests(self.head_extended_resource_requests)
-        self._validate_extended_resource_requests(
-            self.worker_extended_resource_requests
-        )
+        self._validate_gpu_config(self.head_accelerators)
+        self._validate_gpu_config(self.worker_accelerators)
 
-    def _combine_extended_resource_mapping(self):
-        if overwritten := set(self.extended_resource_mapping.keys()).intersection(
-            DEFAULT_RESOURCE_MAPPING.keys()
-        ):
-            if self.overwrite_default_resource_mapping:
-                warnings.warn(
-                    f"Overwriting default resource mapping for {overwritten}",
-                    UserWarning,
-                )
-            else:
+    def _validate_gpu_config(self, gpu_config: Dict[str, int]):
+        for k in gpu_config.keys():
+            if k not in self.accelerator_configs.keys():
                 raise ValueError(
-                    f"Resource mapping already exists for {overwritten}, set overwrite_default_resource_mapping to True to overwrite"
+                    f"GPU configuration '{k}' not found in accelerator_configs, available resources are {list(self.accelerator_configs.keys())}, to add more supported resources use accelerator_configs. i.e. accelerator_configs = {{'{k}': 'FOO_BAR'}}"
                 )
-        self.extended_resource_mapping = {
-            **DEFAULT_RESOURCE_MAPPING,
-            **self.extended_resource_mapping,
-        }
-
-    def _validate_extended_resource_requests(self, extended_resources: Dict[str, int]):
-        for k in extended_resources.keys():
-            if k not in self.extended_resource_mapping.keys():
-                raise ValueError(
-                    f"extended resource '{k}' not found in extended_resource_mapping, available resources are {list(self.extended_resource_mapping.keys())}, to add more supported resources use extended_resource_mapping. i.e. extended_resource_mapping = {{'{k}': 'FOO_BAR'}}"
-                )
-
-    def _str_mem_no_unit_add_GB(self):
-        if isinstance(self.head_memory, str) and self.head_memory.isdecimal():
-            self.head_memory = f"{self.head_memory}G"
-        if (
-            isinstance(self.worker_memory_requests, str)
-            and self.worker_memory_requests.isdecimal()
-        ):
-            self.worker_memory_requests = f"{self.worker_memory_requests}G"
-        if (
-            isinstance(self.worker_memory_limits, str)
-            and self.worker_memory_limits.isdecimal()
-        ):
-            self.worker_memory_limits = f"{self.worker_memory_limits}G"
 
     def _memory_to_string(self):
         if isinstance(self.head_memory_requests, int):
@@ -232,22 +175,8 @@ class ClusterConfigurationV2:
         if isinstance(self.worker_memory_limits, int):
             self.worker_memory_limits = f"{self.worker_memory_limits}G"
 
-    def _cpu_to_resource(self):
-        if self.head_cpus:
-            warnings.warn(
-                "head_cpus is being deprecated, use head_cpu_requests and head_cpu_limits"
-            )
-            self.head_cpu_requests = self.head_cpu_limits = self.head_cpus
-
-    def _memory_to_resource(self):
-        if self.head_memory:
-            warnings.warn(
-                "head_memory is being deprecated, use head_memory_requests and head_memory_limits"
-            )
-            self.head_memory_requests = self.head_memory_limits = self.head_memory
-
     def _validate_types(self):
-        """Validate the types of all fields in the ClusterConfigurationV2 dataclass."""
+        """Validate the types of all fields in the RayJobClusterConfig dataclass."""
         errors = []
         for field_info in fields(self):
             value = getattr(self, field_info.name)

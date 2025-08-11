@@ -14,6 +14,11 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
+from codeflare_sdk.common.utils.constants import CUDA_RUNTIME_IMAGE
+from codeflare_sdk.ray.rayjobs.build_ray_cluster_spec import (
+    DEFAULT_VOLUME_MOUNTS,
+    DEFAULT_VOLUMES,
+)
 from codeflare_sdk.ray.rayjobs.rayjob import RayJob
 from codeflare_sdk.ray.cluster.config import ClusterConfiguration
 
@@ -231,13 +236,18 @@ def test_build_ray_cluster_spec_no_config_error(mocker):
         entrypoint="python script.py",
     )
 
-    # Line 198: Should raise RuntimeError when trying to build spec without config
-    with pytest.raises(RuntimeError, match="No cluster configuration provided"):
-        rayjob._build_ray_cluster_spec()
+    # Since we removed _build_ray_cluster_spec method, this test is no longer applicable
+    # The method is now called internally by _build_rayjob_cr when needed
+    # We can test this by calling _build_rayjob_cr instead
+    rayjob_cr = rayjob._build_rayjob_cr()
+
+    # Should use clusterSelector for existing cluster
+    assert rayjob_cr["spec"]["clusterSelector"]["ray.io/cluster"] == "existing-cluster"
+    assert "rayClusterSpec" not in rayjob_cr["spec"]
 
 
-@patch("codeflare_sdk.ray.rayjobs.rayjob.build_ray_cluster")
-def test_build_ray_cluster_spec(mock_build_ray_cluster, mocker):
+@patch("codeflare_sdk.ray.rayjobs.rayjob.build_ray_cluster_spec")
+def test_build_ray_cluster_spec(mock_build_ray_cluster_spec, mocker):
     """Test _build_ray_cluster_spec method."""
     mocker.patch("kubernetes.config.load_kube_config")
 
@@ -249,12 +259,12 @@ def test_build_ray_cluster_spec(mock_build_ray_cluster, mocker):
         "kind": "RayCluster",
         "metadata": {"name": "test-cluster", "namespace": "test"},
         "spec": {
-            "rayVersion": "2.9.0",
+            "rayVersion": CUDA_RUNTIME_IMAGE,
             "headGroupSpec": {"replicas": 1},
             "workerGroupSpecs": [{"replicas": 2}],
         },
     }
-    mock_build_ray_cluster.return_value = mock_ray_cluster
+    mock_build_ray_cluster_spec.return_value = mock_ray_cluster["spec"]
 
     cluster_config = ClusterConfiguration(
         name="test-cluster", namespace="test", num_workers=2
@@ -266,17 +276,17 @@ def test_build_ray_cluster_spec(mock_build_ray_cluster, mocker):
         entrypoint="python script.py",
     )
 
-    spec = rayjob._build_ray_cluster_spec()
+    # Since we removed _build_ray_cluster_spec method, test the integration through _build_rayjob_cr
+    rayjob_cr = rayjob._build_rayjob_cr()
 
-    # Should return only the spec part, not metadata
-    assert spec == mock_ray_cluster["spec"]
-    assert "metadata" not in spec
+    # Should have rayClusterSpec
+    assert "rayClusterSpec" in rayjob_cr["spec"]
 
-    # Verify build_ray_cluster was called with correct parameters
-    mock_build_ray_cluster.assert_called_once()
-    call_args = mock_build_ray_cluster.call_args[0][0]
-    assert call_args.config.appwrapper is False
-    assert call_args.config.write_to_file is False
+    # Verify build_ray_cluster_spec was called with correct parameters
+    mock_build_ray_cluster_spec.assert_called_once()
+    call_args = mock_build_ray_cluster_spec.call_args
+    # The mock should be called with cluster_config as keyword argument
+    assert call_args.kwargs["cluster_config"] == cluster_config
 
 
 def test_build_rayjob_cr_with_existing_cluster(mocker):
@@ -291,7 +301,6 @@ def test_build_rayjob_cr_with_existing_cluster(mocker):
         cluster_name="existing-cluster",
         namespace="test-namespace",
         entrypoint="python main.py",
-        shutdown_after_job_finishes=False,
         ttl_seconds_after_finished=300,
     )
 
@@ -305,6 +314,7 @@ def test_build_rayjob_cr_with_existing_cluster(mocker):
     # Check lifecycle parameters
     spec = rayjob_cr["spec"]
     assert spec["entrypoint"] == "python main.py"
+    # shutdownAfterJobFinishes should be False when using existing cluster (auto-set)
     assert spec["shutdownAfterJobFinishes"] is False
     assert spec["ttlSecondsAfterFinished"] == 300
 
@@ -313,8 +323,8 @@ def test_build_rayjob_cr_with_existing_cluster(mocker):
     assert "rayClusterSpec" not in spec
 
 
-@patch("codeflare_sdk.ray.rayjobs.rayjob.build_ray_cluster")
-def test_build_rayjob_cr_with_auto_cluster(mock_build_ray_cluster, mocker):
+@patch("codeflare_sdk.ray.rayjobs.rayjob.build_ray_cluster_spec")
+def test_build_rayjob_cr_with_auto_cluster(mock_build_ray_cluster_spec, mocker):
     """Test _build_rayjob_cr method with auto-created cluster."""
     mocker.patch("kubernetes.config.load_kube_config")
 
@@ -326,12 +336,12 @@ def test_build_rayjob_cr_with_auto_cluster(mock_build_ray_cluster, mocker):
         "kind": "RayCluster",
         "metadata": {"name": "auto-cluster", "namespace": "test"},
         "spec": {
-            "rayVersion": "2.9.0",
+            "rayVersion": CUDA_RUNTIME_IMAGE,
             "headGroupSpec": {"replicas": 1},
             "workerGroupSpecs": [{"replicas": 2}],
         },
     }
-    mock_build_ray_cluster.return_value = mock_ray_cluster
+    mock_build_ray_cluster_spec.return_value = mock_ray_cluster["spec"]
 
     cluster_config = ClusterConfiguration(
         name="auto-cluster", namespace="test-namespace", num_workers=2
@@ -365,8 +375,8 @@ def test_submit_validation_no_entrypoint(mocker):
         rayjob.submit()
 
 
-@patch("codeflare_sdk.ray.rayjobs.rayjob.build_ray_cluster")
-def test_submit_with_auto_cluster(mock_build_ray_cluster, mocker):
+@patch("codeflare_sdk.ray.rayjobs.rayjob.build_ray_cluster_spec")
+def test_submit_with_auto_cluster(mock_build_ray_cluster_spec, mocker):
     """Test successful submission with auto-created cluster."""
     mocker.patch("kubernetes.config.load_kube_config")
 
@@ -374,12 +384,12 @@ def test_submit_with_auto_cluster(mock_build_ray_cluster, mocker):
         "apiVersion": "ray.io/v1",
         "kind": "RayCluster",
         "spec": {
-            "rayVersion": "2.9.0",
+            "rayVersion": CUDA_RUNTIME_IMAGE,
             "headGroupSpec": {"replicas": 1},
             "workerGroupSpecs": [{"replicas": 1}],
         },
     }
-    mock_build_ray_cluster.return_value = mock_ray_cluster
+    mock_build_ray_cluster_spec.return_value = mock_ray_cluster["spec"]
 
     # Mock the RayjobApi
     mock_api_class = mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
@@ -408,3 +418,565 @@ def test_submit_with_auto_cluster(mock_build_ray_cluster, mocker):
     job_cr = call_args.kwargs["job"]
     assert "rayClusterSpec" in job_cr["spec"]
     assert job_cr["spec"]["rayClusterSpec"] == mock_ray_cluster["spec"]
+
+
+def test_namespace_auto_detection_success(mocker):
+    """Test successful namespace auto-detection."""
+    mocker.patch(
+        "codeflare_sdk.ray.rayjobs.rayjob.get_current_namespace",
+        return_value="detected-ns",
+    )
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    rayjob = RayJob(
+        job_name="test-job", entrypoint="python script.py", cluster_name="test-cluster"
+    )
+
+    assert rayjob.namespace == "detected-ns"
+
+
+def test_namespace_auto_detection_fallback(mocker):
+    """Test namespace auto-detection fallback to default."""
+    mocker.patch(
+        "codeflare_sdk.ray.rayjobs.rayjob.get_current_namespace", return_value=None
+    )
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    rayjob = RayJob(
+        job_name="test-job", entrypoint="python script.py", cluster_name="test-cluster"
+    )
+
+    assert rayjob.namespace == "default"
+
+
+def test_namespace_explicit_override(mocker):
+    """Test that explicit namespace overrides auto-detection."""
+    mocker.patch(
+        "codeflare_sdk.ray.rayjobs.rayjob.get_current_namespace",
+        return_value="detected-ns",
+    )
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_name="test-cluster",
+        namespace="explicit-ns",
+    )
+
+    assert rayjob.namespace == "explicit-ns"
+
+
+def test_shutdown_behavior_with_cluster_config(mocker):
+    """Test that shutdown_after_job_finishes is True when cluster_config is provided."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+
+    cluster_config = RayJobClusterConfig(name="test-cluster")
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_config=cluster_config,
+    )
+
+    assert rayjob.shutdown_after_job_finishes is True
+
+
+def test_shutdown_behavior_with_existing_cluster(mocker):
+    """Test that shutdown_after_job_finishes is False when using existing cluster."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_name="existing-cluster",
+    )
+
+    assert rayjob.shutdown_after_job_finishes is False
+
+
+def test_rayjob_with_rayjob_cluster_config(mocker):
+    """Test RayJob with the new RayJobClusterConfig."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.build_ray_cluster_spec")
+
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster",
+        num_workers=2,
+        head_cpu_requests="500m",
+        head_memory_requests="512Mi",
+    )
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_config=cluster_config,
+    )
+
+    assert rayjob._cluster_config == cluster_config
+    assert rayjob.cluster_name == "test-cluster"
+
+
+def test_rayjob_cluster_config_validation(mocker):
+    """Test validation of RayJobClusterConfig parameters."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+
+    # Test with minimal valid config
+    cluster_config = RayJobClusterConfig(name="test-cluster")
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_config=cluster_config,
+    )
+
+    assert rayjob._cluster_config is not None
+
+
+def test_rayjob_missing_entrypoint_validation(mocker):
+    """Test that RayJob requires entrypoint for submission."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    # Should raise an error during construction
+    with pytest.raises(
+        TypeError, match="missing 1 required positional argument: 'entrypoint'"
+    ):
+        RayJob(
+            job_name="test-job",
+            cluster_name="test-cluster"
+            # No entrypoint provided
+        )
+
+
+def test_build_ray_cluster_spec_integration(mocker):
+    """Test integration with the new build_ray_cluster_spec function."""
+    mock_builder = mocker.patch(
+        "codeflare_sdk.ray.rayjobs.rayjob.build_ray_cluster_spec"
+    )
+    mock_builder.return_value = {"spec": "test-spec"}
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+
+    cluster_config = RayJobClusterConfig(name="test-cluster")
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_config=cluster_config,
+    )
+
+    # Build the RayJob CR
+    rayjob_cr = rayjob._build_rayjob_cr()
+
+    # Verify the builder was called correctly
+    mock_builder.assert_called_once_with(cluster_config=cluster_config)
+
+    # Verify the spec is included in the RayJob CR
+    assert "rayClusterSpec" in rayjob_cr["spec"]
+    assert rayjob_cr["spec"]["rayClusterSpec"] == {"spec": "test-spec"}
+
+
+def test_rayjob_with_runtime_env(mocker):
+    """Test RayJob with runtime environment configuration."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    runtime_env = {"pip": ["numpy", "pandas"]}
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_name="test-cluster",
+        runtime_env=runtime_env,
+    )
+
+    assert rayjob.runtime_env == runtime_env
+
+    # Verify runtime env is included in the CR
+    rayjob_cr = rayjob._build_rayjob_cr()
+    assert rayjob_cr["spec"]["runtimeEnvYAML"] == str(runtime_env)
+
+
+def test_rayjob_with_active_deadline_and_ttl(mocker):
+    """Test RayJob with both active deadline and TTL settings."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_name="test-cluster",
+        active_deadline_seconds=300,
+        ttl_seconds_after_finished=600,
+    )
+
+    assert rayjob.active_deadline_seconds == 300
+    assert rayjob.ttl_seconds_after_finished == 600
+
+    # Verify both are included in the CR
+    rayjob_cr = rayjob._build_rayjob_cr()
+    assert rayjob_cr["spec"]["activeDeadlineSeconds"] == 300
+    assert rayjob_cr["spec"]["ttlSecondsAfterFinished"] == 600
+
+
+def test_rayjob_cluster_name_generation_with_config(mocker):
+    """Test cluster name generation when using cluster_config."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+
+    cluster_config = RayJobClusterConfig(name="")
+
+    rayjob = RayJob(
+        job_name="my-job", entrypoint="python script.py", cluster_config=cluster_config
+    )
+
+    assert rayjob.cluster_name == "my-job-cluster"
+    assert cluster_config.name == "my-job-cluster"
+
+
+def test_rayjob_namespace_propagation_to_cluster_config(mocker):
+    """Test that job namespace is propagated to cluster config when None."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    from codeflare_sdk.ray.rayjobs.rayjob import get_current_namespace
+
+    mocker.patch(
+        "codeflare_sdk.ray.rayjobs.rayjob.get_current_namespace",
+        return_value="detected-ns",
+    )
+
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster", namespace=None  # This should be set to job namespace
+    )
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_config=cluster_config,
+    )
+
+    assert cluster_config.namespace == "detected-ns"
+    assert rayjob.namespace == "detected-ns"
+
+
+def test_rayjob_error_handling_invalid_cluster_config(mocker):
+    """Test error handling with invalid cluster configuration."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    # Test with invalid cluster config type
+    with pytest.raises(
+        ValueError, match="Either cluster_name or cluster_config must be provided"
+    ):
+        RayJob(
+            job_name="test-job",
+            entrypoint="python script.py",
+            # No cluster configuration provided
+        )
+
+
+def test_rayjob_constructor_parameter_validation(mocker):
+    """Test constructor parameter validation."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    # Test with valid parameters
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_name="test-cluster",
+        namespace="test-ns",
+        runtime_env={"pip": ["numpy"]},
+        ttl_seconds_after_finished=300,
+        active_deadline_seconds=600,
+    )
+
+    assert rayjob.name == "test-job"
+    assert rayjob.entrypoint == "python script.py"
+    assert rayjob.cluster_name == "test-cluster"
+    assert rayjob.namespace == "test-ns"
+    assert rayjob.runtime_env == {"pip": ["numpy"]}
+    assert rayjob.ttl_seconds_after_finished == 300
+    assert rayjob.active_deadline_seconds == 600
+
+
+def test_build_ray_cluster_spec_function(mocker):
+    """Test the build_ray_cluster_spec function directly."""
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+    from codeflare_sdk.ray.rayjobs.build_ray_cluster_spec import build_ray_cluster_spec
+
+    # Create a test cluster config
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster",
+        num_workers=2,
+        head_cpu_requests="500m",
+        head_memory_requests="512Mi",
+        worker_cpu_requests="250m",
+        worker_memory_requests="256Mi",
+    )
+
+    # Build the spec
+    spec = build_ray_cluster_spec(cluster_config)
+
+    # Verify basic structure
+    assert "rayVersion" in spec
+    assert "enableInTreeAutoscaling" in spec
+    assert "headGroupSpec" in spec
+    assert "workerGroupSpecs" in spec
+
+    # Verify head group spec
+    head_spec = spec["headGroupSpec"]
+    assert head_spec["serviceType"] == "ClusterIP"
+    assert head_spec["enableIngress"] is False
+    assert "rayStartParams" in head_spec
+    assert "template" in head_spec
+
+    # Verify worker group spec
+    worker_specs = spec["workerGroupSpecs"]
+    assert len(worker_specs) == 1
+    worker_spec = worker_specs[0]
+    assert worker_spec["replicas"] == 2
+    assert worker_spec["minReplicas"] == 2
+    assert worker_spec["maxReplicas"] == 2
+    assert worker_spec["groupName"] == "worker-group-test-cluster"
+
+
+def test_build_ray_cluster_spec_with_gcs_ft(mocker):
+    """Test build_ray_cluster_spec with GCS fault tolerance enabled."""
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+    from codeflare_sdk.ray.rayjobs.build_ray_cluster_spec import build_ray_cluster_spec
+
+    # Create a test cluster config with GCS FT enabled
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster",
+        enable_gcs_ft=True,
+        redis_address="redis://redis-service:6379",
+        external_storage_namespace="storage-ns",
+    )
+
+    # Build the spec
+    spec = build_ray_cluster_spec(cluster_config)
+
+    # Verify GCS fault tolerance options
+    assert "gcsFaultToleranceOptions" in spec
+    gcs_ft = spec["gcsFaultToleranceOptions"]
+    assert gcs_ft["redisAddress"] == "redis://redis-service:6379"
+    assert gcs_ft["externalStorageNamespace"] == "storage-ns"
+
+
+def test_build_ray_cluster_spec_with_accelerators(mocker):
+    """Test build_ray_cluster_spec with GPU accelerators."""
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+    from codeflare_sdk.ray.rayjobs.build_ray_cluster_spec import build_ray_cluster_spec
+
+    # Create a test cluster config with GPU accelerators
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster",
+        head_accelerators={"nvidia.com/gpu": 1},
+        worker_accelerators={"nvidia.com/gpu": 2},
+    )
+
+    # Build the spec
+    spec = build_ray_cluster_spec(cluster_config)
+
+    # Verify head group has GPU parameters
+    head_spec = spec["headGroupSpec"]
+    head_params = head_spec["rayStartParams"]
+    assert "num-gpus" in head_params
+    assert head_params["num-gpus"] == "1"
+
+    # Verify worker group has GPU parameters
+    worker_specs = spec["workerGroupSpecs"]
+    worker_spec = worker_specs[0]
+    worker_params = worker_spec["rayStartParams"]
+    assert "num-gpus" in worker_params
+    assert worker_params["num-gpus"] == "2"
+
+
+def test_build_ray_cluster_spec_with_custom_volumes(mocker):
+    """Test build_ray_cluster_spec with custom volumes and volume mounts."""
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+    from codeflare_sdk.ray.rayjobs.build_ray_cluster_spec import (
+        build_ray_cluster_spec,
+        DEFAULT_VOLUMES,
+        DEFAULT_VOLUME_MOUNTS,
+    )
+    from kubernetes.client import V1Volume, V1VolumeMount
+
+    # Create custom volumes and volume mounts
+    custom_volume = V1Volume(name="custom-data", empty_dir={})
+    custom_volume_mount = V1VolumeMount(name="custom-data", mount_path="/data")
+
+    # Create a test cluster config with custom volumes
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster",
+        volumes=[custom_volume],
+        volume_mounts=[custom_volume_mount],
+    )
+
+    # Build the spec
+    spec = build_ray_cluster_spec(cluster_config)
+
+    # Verify custom volumes are included
+    head_spec = spec["headGroupSpec"]
+    head_pod_spec = head_spec["template"].spec  # Access the spec attribute
+    assert len(head_pod_spec.volumes) > len(DEFAULT_VOLUMES)
+
+    # Verify custom volume mounts are included
+    head_container = head_pod_spec.containers[0]  # Access the containers attribute
+    assert len(head_container.volume_mounts) > len(DEFAULT_VOLUME_MOUNTS)
+
+
+def test_build_ray_cluster_spec_with_environment_variables(mocker):
+    """Test build_ray_cluster_spec with environment variables."""
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+    from codeflare_sdk.ray.rayjobs.build_ray_cluster_spec import build_ray_cluster_spec
+
+    # Create a test cluster config with environment variables
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster",
+        envs={"CUDA_VISIBLE_DEVICES": "0", "RAY_DISABLE_IMPORT_WARNING": "1"},
+    )
+
+    # Build the spec
+    spec = build_ray_cluster_spec(cluster_config)
+
+    # Verify environment variables are included in head container
+    head_spec = spec["headGroupSpec"]
+    head_pod_spec = head_spec["template"].spec
+    head_container = head_pod_spec.containers[0]
+    assert hasattr(head_container, "env")
+    env_vars = {env.name: env.value for env in head_container.env}
+    assert env_vars["CUDA_VISIBLE_DEVICES"] == "0"
+    assert env_vars["RAY_DISABLE_IMPORT_WARNING"] == "1"
+
+    # Verify environment variables are included in worker container
+    worker_specs = spec["workerGroupSpecs"]
+    worker_spec = worker_specs[0]
+    worker_pod_spec = worker_spec["template"].spec
+    worker_container = worker_pod_spec.containers[0]
+
+    assert hasattr(worker_container, "env")
+    worker_env_vars = {env.name: env.value for env in worker_container.env}
+    assert worker_env_vars["CUDA_VISIBLE_DEVICES"] == "0"
+    assert worker_env_vars["RAY_DISABLE_IMPORT_WARNING"] == "1"
+
+
+def test_build_ray_cluster_spec_with_tolerations(mocker):
+    """Test build_ray_cluster_spec with tolerations."""
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+    from codeflare_sdk.ray.rayjobs.build_ray_cluster_spec import build_ray_cluster_spec
+    from kubernetes.client import V1Toleration
+
+    # Create test tolerations
+    head_toleration = V1Toleration(
+        key="node-role.kubernetes.io/master", operator="Exists", effect="NoSchedule"
+    )
+    worker_toleration = V1Toleration(
+        key="nvidia.com/gpu", operator="Exists", effect="NoSchedule"
+    )
+
+    # Create a test cluster config with tolerations
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster",
+        head_tolerations=[head_toleration],
+        worker_tolerations=[worker_toleration],
+    )
+
+    # Build the spec
+    spec = build_ray_cluster_spec(cluster_config)
+
+    # Verify head tolerations
+    head_spec = spec["headGroupSpec"]
+    head_pod_spec = head_spec["template"].spec  # Access the spec attribute
+    assert hasattr(head_pod_spec, "tolerations")
+    assert len(head_pod_spec.tolerations) == 1
+    assert head_pod_spec.tolerations[0].key == "node-role.kubernetes.io/master"
+
+    # Verify worker tolerations
+    worker_specs = spec["workerGroupSpecs"]
+    worker_spec = worker_specs[0]
+    worker_pod_spec = worker_spec["template"].spec  # Access the spec attribute
+    assert hasattr(worker_pod_spec, "tolerations")
+    assert len(worker_pod_spec.tolerations) == 1
+    assert worker_pod_spec.tolerations[0].key == "nvidia.com/gpu"
+
+
+def test_build_ray_cluster_spec_with_image_pull_secrets(mocker):
+    """Test build_ray_cluster_spec with image pull secrets."""
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+    from codeflare_sdk.ray.rayjobs.build_ray_cluster_spec import build_ray_cluster_spec
+
+    # Create a test cluster config with image pull secrets
+    cluster_config = RayJobClusterConfig(
+        name="test-cluster", image_pull_secrets=["my-registry-secret", "another-secret"]
+    )
+
+    # Build the spec
+    spec = build_ray_cluster_spec(cluster_config)
+
+    # Verify image pull secrets are included in head pod
+    head_spec = spec["headGroupSpec"]
+    head_pod_spec = head_spec["template"].spec  # Access the spec attribute
+    assert hasattr(head_pod_spec, "image_pull_secrets")
+
+    head_secrets = head_pod_spec.image_pull_secrets
+    assert len(head_secrets) == 2
+    assert head_secrets[0].name == "my-registry-secret"
+    assert head_secrets[1].name == "another-secret"
+
+    # Verify image pull secrets are included in worker pod
+    worker_specs = spec["workerGroupSpecs"]
+    worker_spec = worker_specs[0]
+    worker_pod_spec = worker_spec["template"].spec  # Access the spec attribute
+    assert hasattr(worker_pod_spec, "image_pull_secrets")
+
+    worker_secrets = worker_pod_spec.image_pull_secrets
+    assert len(worker_secrets) == 2
+    assert worker_secrets[0].name == "my-registry-secret"
+    assert worker_secrets[1].name == "another-secret"
+
+
+def test_rayjob_user_override_shutdown_behavior(mocker):
+    """Test that user can override the auto-detected shutdown behavior."""
+    mocker.patch("codeflare_sdk.ray.rayjobs.rayjob.RayjobApi")
+
+    # Test 1: User overrides shutdown to True even when using existing cluster
+    rayjob_existing_override = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_name="existing-cluster",
+        shutdown_after_job_finishes=True,  # User override
+    )
+
+    assert rayjob_existing_override.shutdown_after_job_finishes is True
+
+    # Test 2: User overrides shutdown to False even when creating new cluster
+    from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
+
+    cluster_config = RayJobClusterConfig(name="test-cluster")
+
+    rayjob_new_override = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_config=cluster_config,
+        shutdown_after_job_finishes=False,  # User override
+    )
+
+    assert rayjob_new_override.shutdown_after_job_finishes is False
+
+    # Test 3: User override takes precedence over auto-detection
+    rayjob_override_priority = RayJob(
+        job_name="test-job",
+        entrypoint="python script.py",
+        cluster_config=cluster_config,
+        shutdown_after_job_finishes=True,  # Should override auto-detection
+    )
+
+    assert rayjob_override_priority.shutdown_after_job_finishes is True
