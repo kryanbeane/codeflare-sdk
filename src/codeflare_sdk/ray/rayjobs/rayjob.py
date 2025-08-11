@@ -224,6 +224,9 @@ class RayJob:
         # Note: CodeFlare Operator should still create dashboard routes for the RayCluster
         ray_cluster_spec = ray_cluster_dict["spec"]
 
+        # Override imagePullPolicy to "IfNotPresent" for RayJob RayCluster specs
+        self._override_image_pull_policy(ray_cluster_spec)
+
         logger.info(
             f"Built RayCluster spec using existing build logic for cluster: {self.cluster_name}"
         )
@@ -297,4 +300,32 @@ class RayJob:
 
         return status_mapping.get(
             deployment_status, (CodeflareRayJobStatus.UNKNOWN, False)
+        )
+
+    def _override_image_pull_policy(self, ray_cluster_spec: Dict[str, Any]) -> None:
+        """
+        Override the imagePullPolicy to "IfNotPresent" for all containers in the RayCluster spec.
+        This is specifically for RayJob RayCluster specs as requested.
+        """
+        # Update head group containers
+        if (
+            "headGroupSpec" in ray_cluster_spec
+            and "template" in ray_cluster_spec["headGroupSpec"]
+        ):
+            head_template = ray_cluster_spec["headGroupSpec"]["template"]
+            if "spec" in head_template and "containers" in head_template["spec"]:
+                for container in head_template["spec"]["containers"]:
+                    container["imagePullPolicy"] = "IfNotPresent"
+
+        # Update worker group containers
+        if "workerGroupSpecs" in ray_cluster_spec:
+            for worker_group in ray_cluster_spec["workerGroupSpecs"]:
+                if "template" in worker_group and "spec" in worker_group["template"]:
+                    worker_template = worker_group["template"]
+                    if "containers" in worker_template["spec"]:
+                        for container in worker_template["spec"]["containers"]:
+                            container["imagePullPolicy"] = "IfNotPresent"
+
+        logger.debug(
+            "Updated imagePullPolicy to 'IfNotPresent' for all containers in RayCluster spec"
         )
