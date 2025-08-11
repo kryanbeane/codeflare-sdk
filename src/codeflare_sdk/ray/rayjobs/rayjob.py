@@ -13,12 +13,12 @@
 # limitations under the License.
 
 """
-RayJob client for submitting and managing Ray jobs using the odh-kuberay-client.
+RayJob client for submitting and managing Ray jobs using the kuberay python client.
 """
 
 import logging
 from typing import Dict, Any, Optional, Tuple
-from odh_kuberay_client.kuberay_job_api import RayjobApi
+from python_client.kuberay_job_api import RayjobApi
 
 from ..cluster.cluster import Cluster
 from ..cluster.config import ClusterConfiguration
