@@ -20,9 +20,9 @@ import logging
 from typing import Dict, Any, Optional, Tuple
 from python_client.kuberay_job_api import RayjobApi
 
-from ..cluster.cluster import Cluster
 from ..cluster.config import ClusterConfiguration
 from ..cluster.build_ray_cluster import build_ray_cluster
+from ...common.utils import get_current_namespace
 
 from .status import (
     RayJobDeploymentStatus,
@@ -48,7 +48,7 @@ class RayJob:
         job_name: str,
         cluster_name: Optional[str] = None,
         cluster_config: Optional[ClusterConfiguration] = None,
-        namespace: str = "default",
+        namespace: Optional[str] = None,
         entrypoint: Optional[str] = None,
         runtime_env: Optional[Dict[str, Any]] = None,
         shutdown_after_job_finishes: bool = True,
@@ -62,7 +62,7 @@ class RayJob:
             job_name: The name for the Ray job
             cluster_name: The name of an existing Ray cluster (optional if cluster_config provided)
             cluster_config: Configuration for creating a new cluster (optional if cluster_name provided)
-            namespace: The Kubernetes namespace (default: "default")
+            namespace: The Kubernetes namespace
             entrypoint: The Python script or command to run (required for submission)
             runtime_env: Ray runtime environment configuration (optional)
             shutdown_after_job_finishes: Whether to automatically cleanup the cluster after job completion (default: True)
@@ -77,12 +77,22 @@ class RayJob:
             raise ValueError("Cannot specify both cluster_name and cluster_config")
 
         self.name = job_name
-        self.namespace = namespace
         self.entrypoint = entrypoint
         self.runtime_env = runtime_env
         self.shutdown_after_job_finishes = shutdown_after_job_finishes
         self.ttl_seconds_after_finished = ttl_seconds_after_finished
         self.active_deadline_seconds = active_deadline_seconds
+
+        if namespace is None:
+            detected_namespace = get_current_namespace()
+            if detected_namespace:
+                self.namespace = detected_namespace
+                logger.info(f"Auto-detected namespace: {self.namespace}")
+            else:
+                self.namespace = "default"
+                logger.warning("Could not auto-detect namespace, using 'default'")
+        else:
+            self.namespace = namespace
 
         # Cluster configuration
         self._cluster_name = cluster_name
@@ -92,10 +102,10 @@ class RayJob:
         if cluster_config is not None:
             # Ensure cluster config has the same namespace as the job
             if cluster_config.namespace is None:
-                cluster_config.namespace = namespace
-            elif cluster_config.namespace != namespace:
+                cluster_config.namespace = self.namespace
+            elif cluster_config.namespace != self.namespace:
                 logger.warning(
-                    f"Cluster config namespace ({cluster_config.namespace}) differs from job namespace ({namespace})"
+                    f"Cluster config namespace ({cluster_config.namespace}) differs from job namespace ({self.namespace})"
                 )
 
             self.cluster_name = cluster_config.name or f"{job_name}-cluster"
