@@ -22,7 +22,6 @@ from python_client.kuberay_job_api import RayjobApi
 
 from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig
 
-from .build_ray_cluster_spec import build_ray_cluster_spec
 from ...common.utils import get_current_namespace
 
 from .status import (
@@ -52,9 +51,7 @@ class RayJob:
         cluster_config: Optional[RayJobClusterConfig] = None,
         namespace: Optional[str] = None,
         runtime_env: Optional[Dict[str, Any]] = None,
-        shutdown_after_job_finishes: Optional[
-            bool
-        ] = None,  # User can override auto-detection
+        shutdown_after_job_finishes: Optional[bool] = None,
         ttl_seconds_after_finished: int = 0,
         active_deadline_seconds: Optional[int] = None,
     ):
@@ -78,12 +75,25 @@ class RayJob:
             - False if cluster_name is provided (existing cluster will not be shut down)
             - User can explicitly set this value to override auto-detection
         """
-        # Validate input parameters
         if cluster_name is None and cluster_config is None:
-            raise ValueError("Either cluster_name or cluster_config must be provided")
+            raise ValueError(
+                "❌ Configuration Error: You must provide either 'cluster_name' (for existing cluster) "
+                "or 'cluster_config' (to create new cluster), but not both."
+            )
 
         if cluster_name is not None and cluster_config is not None:
-            raise ValueError("Cannot specify both cluster_name and cluster_config")
+            raise ValueError(
+                "❌ Configuration Error: You cannot specify both 'cluster_name' and 'cluster_config'. "
+                "Choose one approach:\n"
+                "• Use 'cluster_name' to connect to an existing cluster\n"
+                "• Use 'cluster_config' to create a new cluster"
+            )
+
+        if cluster_config is None and cluster_name is None:
+            raise ValueError(
+                "❌ Configuration Error: When not providing 'cluster_config', 'cluster_name' is required "
+                "to specify which existing cluster to use."
+            )
 
         self.name = job_name
         self.entrypoint = entrypoint
@@ -96,13 +106,10 @@ class RayJob:
         # If using existing cluster, we don't want to shut it down
         # User can override this behavior by explicitly setting shutdown_after_job_finishes
         if shutdown_after_job_finishes is not None:
-            # User explicitly set the value
             self.shutdown_after_job_finishes = shutdown_after_job_finishes
         elif cluster_config is not None:
-            # Auto-detect: new cluster should be cleaned up
             self.shutdown_after_job_finishes = True
         else:
-            # Auto-detect: existing cluster should not be shut down
             self.shutdown_after_job_finishes = False
 
         if namespace is None:
@@ -111,31 +118,27 @@ class RayJob:
                 self.namespace = detected_namespace
                 logger.info(f"Auto-detected namespace: {self.namespace}")
             else:
-                self.namespace = "default"
-                logger.warning("Could not auto-detect namespace, using 'default'")
+                raise ValueError(
+                    "❌ Configuration Error: Could not auto-detect Kubernetes namespace. "
+                    "Please explicitly specify the 'namespace' parameter. "
+                )
         else:
             self.namespace = namespace
 
-        # Cluster configuration
         self._cluster_name = cluster_name
         self._cluster_config = cluster_config
 
-        # Determine cluster name for the job
         if cluster_config is not None:
-            # Ensure cluster config has the same namespace as the job
-            if cluster_config.namespace is None:
-                cluster_config.namespace = self.namespace
-            elif cluster_config.namespace != self.namespace:
-                logger.warning(
-                    f"Cluster config namespace ({cluster_config.namespace}) differs from job namespace ({self.namespace})"
-                )
-
-            self.cluster_name = cluster_config.name or f"{job_name}-cluster"
-            # Update the cluster config name if it wasn't set
-            if not cluster_config.name:
-                cluster_config.name = self.cluster_name
+            self.cluster_name = f"{job_name}-cluster"
+            logger.info(f"Creating new cluster: {self.cluster_name}")
         else:
+            # Using existing cluster: cluster_name must be provided
+            if cluster_name is None:
+                raise ValueError(
+                    "❌ Configuration Error: a 'cluster_name' is required when not providing 'cluster_config'"
+                )
             self.cluster_name = cluster_name
+            logger.info(f"Using existing cluster: {self.cluster_name}")
 
         # Initialize the KubeRay job API client
         self._api = RayjobApi()
@@ -143,21 +146,6 @@ class RayJob:
         logger.info(f"Initialized RayJob: {self.name} in namespace: {self.namespace}")
 
     def submit(self) -> str:
-        """
-        Submit the Ray job to the Kubernetes cluster.
-
-        The RayJob CRD will automatically:
-        - Create a new cluster if cluster_config was provided
-        - Use existing cluster if cluster_name was provided
-        - Clean up resources based on shutdown_after_job_finishes setting
-
-        Returns:
-            The job ID/name if submission was successful
-
-        Raises:
-            ValueError: If entrypoint is not provided
-            RuntimeError: If job submission fails
-        """
         # Validate required parameters
         if not self.entrypoint:
             raise ValueError("entrypoint must be provided to submit a RayJob")
@@ -208,8 +196,8 @@ class RayJob:
 
         # Configure cluster: either use existing or create new
         if self._cluster_config is not None:
-            ray_cluster_spec = build_ray_cluster_spec(
-                cluster_config=self._cluster_config
+            ray_cluster_spec = self._cluster_config.build_ray_cluster_spec(
+                cluster_name=self.cluster_name
             )
 
             logger.info(

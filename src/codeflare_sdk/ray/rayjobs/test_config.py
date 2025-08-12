@@ -8,7 +8,7 @@ from codeflare_sdk.ray.rayjobs.config import RayJobClusterConfig, DEFAULT_ACCELE
 
 def test_accelerator_configs_defaults_to_default_accelerators():
     """Test that accelerator_configs defaults to DEFAULT_ACCELERATORS.copy()"""
-    config = RayJobClusterConfig(name="test-cluster")
+    config = RayJobClusterConfig()
 
     # Should have all the default accelerators
     assert "nvidia.com/gpu" in config.accelerator_configs
@@ -27,9 +27,7 @@ def test_accelerator_configs_can_be_overridden():
         "custom.com/accelerator": "CUSTOM_ACCELERATOR",
     }
 
-    config = RayJobClusterConfig(
-        name="test-cluster", accelerator_configs=custom_configs
-    )
+    config = RayJobClusterConfig(accelerator_configs=custom_configs)
 
     # Should have custom configs
     assert config.accelerator_configs == custom_configs
@@ -48,9 +46,7 @@ def test_accelerator_configs_can_extend_defaults():
         "custom.com/accelerator": "CUSTOM_ACCEL",
     }
 
-    config = RayJobClusterConfig(
-        name="test-cluster", accelerator_configs=extended_configs
-    )
+    config = RayJobClusterConfig(accelerator_configs=extended_configs)
 
     # Should have all defaults plus custom
     assert "nvidia.com/gpu" in config.accelerator_configs
@@ -61,9 +57,7 @@ def test_accelerator_configs_can_extend_defaults():
 
 def test_gpu_validation_works_with_defaults():
     """Test that GPU validation works with default accelerator configs"""
-    config = RayJobClusterConfig(
-        name="test-cluster", head_accelerators={"nvidia.com/gpu": 1}
-    )
+    config = RayJobClusterConfig(head_accelerators={"nvidia.com/gpu": 1})
 
     # Should not raise any errors
     assert config.head_accelerators == {"nvidia.com/gpu": 1}
@@ -72,7 +66,6 @@ def test_gpu_validation_works_with_defaults():
 def test_gpu_validation_works_with_custom_configs():
     """Test that GPU validation works with custom accelerator configs"""
     config = RayJobClusterConfig(
-        name="test-cluster",
         accelerator_configs={"custom.com/accelerator": "CUSTOM_ACCEL"},
         head_accelerators={"custom.com/accelerator": 1},
     )
@@ -86,6 +79,4 @@ def test_gpu_validation_fails_with_unsupported_accelerator():
     with pytest.raises(
         ValueError, match="GPU configuration 'unsupported.com/accelerator' not found"
     ):
-        RayJobClusterConfig(
-            name="test-cluster", head_accelerators={"unsupported.com/accelerator": 1}
-        )
+        RayJobClusterConfig(head_accelerators={"unsupported.com/accelerator": 1})
