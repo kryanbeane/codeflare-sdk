@@ -7,7 +7,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from support import *
 
 from codeflare_sdk import (
-    TokenAuthentication,
     RayJob,
     ManagedClusterConfig,
 )
@@ -50,12 +49,6 @@ class TestRayJobRayVersionValidationOauth:
 
     def run_rayjob_lifecycled_cluster_incompatible_version(self):
         """Test Ray version validation with cluster lifecycling using incompatible image."""
-        auth = TokenAuthentication(
-            token=run_oc_command(["whoami", "--show-token=true"]),
-            server=run_oc_command(["whoami", "--show-server=true"]),
-            skip_tls=True,
-        )
-        auth.login()
 
         job_name = "incompatible-lifecycle-rayjob"
 
@@ -76,7 +69,6 @@ class TestRayJobRayVersionValidationOauth:
             cluster_config=cluster_config,
             namespace=self.namespace,
             entrypoint="python -c 'print(\"This should not run due to version mismatch\")'",
-            shutdown_after_job_finishes=True,
             ttl_seconds_after_finished=30,
         )
 
@@ -101,12 +93,6 @@ class TestRayJobRayVersionValidationOauth:
 
     def run_rayjob_lifecycled_cluster_unknown_version(self):
         """Test Ray version validation with unknown image (should warn but not fail)."""
-        auth = TokenAuthentication(
-            token=run_oc_command(["whoami", "--show-token=true"]),
-            server=run_oc_command(["whoami", "--show-server=true"]),
-            skip_tls=True,
-        )
-        auth.login()
 
         job_name = "unknown-version-rayjob"
 
@@ -125,7 +111,6 @@ class TestRayJobRayVersionValidationOauth:
             cluster_config=cluster_config,
             namespace=self.namespace,
             entrypoint="python -c 'print(\"Testing unknown Ray version scenario\")'",
-            shutdown_after_job_finishes=True,
             ttl_seconds_after_finished=30,
         )
 
