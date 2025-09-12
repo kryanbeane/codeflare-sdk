@@ -76,7 +76,6 @@ class TestRayJobRayVersionValidationOauth:
             cluster_config=cluster_config,
             namespace=self.namespace,
             entrypoint="python -c 'print(\"This should not run due to version mismatch\")'",
-            shutdown_after_job_finishes=True,
             ttl_seconds_after_finished=30,
         )
 
