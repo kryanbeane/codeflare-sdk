@@ -1,4 +1,4 @@
-RAY_VERSION = "2.47.1"
+RAY_VERSION = "2.49.1"
 """
 The below are used to define the default runtime image for the Ray Cluster.
 * For python 3.11:ray:2.47.1-py311-cu121
