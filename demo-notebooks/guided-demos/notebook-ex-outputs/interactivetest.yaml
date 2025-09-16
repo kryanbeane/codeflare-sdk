@@ -81,7 +81,7 @@ spec:
                     value: /home/ray/workspace/tls/server.key
                   - name: RAY_TLS_CA_CERT
                     value: /home/ray/workspace/tls/ca.crt
-                  image: quay.io/modh/ray:2.47.1-py311-cu121
+                  image: quay.io/modh/ray:2.49.1-py311-cu122
                   imagePullPolicy: Always
                   lifecycle:
                     preStop:
@@ -147,7 +147,7 @@ spec:
                     value: /home/ray/workspace/tls/server.key
                   - name: RAY_TLS_CA_CERT
                     value: /home/ray/workspace/tls/ca.crt
-                  image: quay.io/modh/ray:2.47.1-py311-cu121
+                  image: quay.io/modh/ray:2.49.1-py311-cu122
                   lifecycle:
                     preStop:
                       exec:
