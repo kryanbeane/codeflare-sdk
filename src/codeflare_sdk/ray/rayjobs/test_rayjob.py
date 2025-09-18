@@ -2004,3 +2004,193 @@ def test_update_existing_cluster_for_scripts_api_errors(mocker, auto_mock_setup)
         rayjob._update_existing_cluster_for_scripts(
             "test-configmap", mock_config_builder
         )
+
+
+def test_rayjob_kueue_label_no_default_queue(auto_mock_setup, mocker, caplog):
+    """Test RayJob falls back to 'default' queue when no default queue exists."""
+    mocker.patch(
+        "codeflare_sdk.ray.rayjobs.rayjob.get_default_kueue_name",
+        return_value=None,
+    )
+
+    mock_api_instance = auto_mock_setup["rayjob_api"]
+    mock_api_instance.submit_job.return_value = {"metadata": {"name": "test-job"}}
+
+    cluster_config = ManagedClusterConfig()
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_config=cluster_config,
+        entrypoint="python script.py",
+    )
+
+    with caplog.at_level("WARNING"):
+        rayjob.submit()
+
+    # Verify the submitted job has the fallback label
+    call_args = mock_api_instance.submit_job.call_args
+    submitted_job = call_args.kwargs["job"]
+    assert submitted_job["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "default"
+
+    # Verify warning was logged
+    assert "No default Kueue LocalQueue found" in caplog.text
+
+
+def test_rayjob_kueue_explicit_local_queue(auto_mock_setup):
+    """Test RayJob uses explicitly specified local queue."""
+    mock_api_instance = auto_mock_setup["rayjob_api"]
+    mock_api_instance.submit_job.return_value = {"metadata": {"name": "test-job"}}
+
+    cluster_config = ManagedClusterConfig()
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_config=cluster_config,
+        entrypoint="python script.py",
+        local_queue="custom-queue",
+    )
+
+    rayjob.submit()
+
+    # Verify the submitted job has the explicit queue label
+    call_args = mock_api_instance.submit_job.call_args
+    submitted_job = call_args.kwargs["job"]
+    assert (
+        submitted_job["metadata"]["labels"]["kueue.x-k8s.io/queue-name"]
+        == "custom-queue"
+    )
+
+
+def test_rayjob_no_kueue_label_for_existing_cluster(auto_mock_setup):
+    """Test RayJob doesn't add Kueue label for existing clusters."""
+    mock_api_instance = auto_mock_setup["rayjob_api"]
+    mock_api_instance.submit_job.return_value = {"metadata": {"name": "test-job"}}
+
+    # Using existing cluster (no cluster_config)
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_name="existing-cluster",
+        entrypoint="python script.py",
+    )
+
+    rayjob.submit()
+
+    # Verify no Kueue label was added
+    call_args = mock_api_instance.submit_job.call_args
+    submitted_job = call_args.kwargs["job"]
+    assert "kueue.x-k8s.io/queue-name" not in submitted_job["metadata"]["labels"]
+
+
+def test_rayjob_with_ttl_and_deadline(auto_mock_setup):
+    """Test RayJob with TTL and active deadline seconds."""
+    mock_api_instance = auto_mock_setup["rayjob_api"]
+    mock_api_instance.submit_job.return_value = {"metadata": {"name": "test-job"}}
+
+    cluster_config = ManagedClusterConfig()
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_config=cluster_config,
+        entrypoint="python script.py",
+        ttl_seconds_after_finished=300,
+        active_deadline_seconds=600,
+    )
+
+    rayjob.submit()
+
+    # Verify TTL and deadline were set
+    call_args = mock_api_instance.submit_job.call_args
+    submitted_job = call_args.kwargs["job"]
+    assert submitted_job["spec"]["ttlSecondsAfterFinished"] == 300
+    assert submitted_job["spec"]["activeDeadlineSeconds"] == 600
+
+
+def test_rayjob_shutdown_after_job_finishes(auto_mock_setup):
+    """Test RayJob sets shutdownAfterJobFinishes correctly."""
+    mock_api_instance = auto_mock_setup["rayjob_api"]
+    mock_api_instance.submit_job.return_value = {"metadata": {"name": "test-job"}}
+
+    # Test with managed cluster (should shutdown)
+    cluster_config = ManagedClusterConfig()
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_config=cluster_config,
+        entrypoint="python script.py",
+    )
+
+    rayjob.submit()
+
+    call_args = mock_api_instance.submit_job.call_args
+    submitted_job = call_args.kwargs["job"]
+    assert submitted_job["spec"]["shutdownAfterJobFinishes"] is True
+
+    # Test with existing cluster (should not shutdown)
+    rayjob2 = RayJob(
+        job_name="test-job2",
+        cluster_name="existing-cluster",
+        entrypoint="python script.py",
+    )
+
+    rayjob2.submit()
+
+    call_args2 = mock_api_instance.submit_job.call_args
+    submitted_job2 = call_args2.kwargs["job"]
+    assert submitted_job2["spec"]["shutdownAfterJobFinishes"] is False
+
+
+def test_rayjob_stop_delete_resubmit_logging(auto_mock_setup, caplog):
+    """Test logging for stop, delete, and resubmit operations."""
+    mock_api_instance = auto_mock_setup["rayjob_api"]
+
+    # Test stop with logging
+    mock_api_instance.suspend_job.return_value = {
+        "metadata": {"name": "test-rayjob"},
+        "spec": {"suspend": True},
+    }
+
+    rayjob = RayJob(
+        job_name="test-rayjob",
+        cluster_name="test-cluster",
+        namespace="test-namespace",
+        entrypoint="python script.py",
+    )
+
+    with caplog.at_level("INFO"):
+        result = rayjob.stop()
+
+    assert result is True
+    assert "Successfully stopped the RayJob test-rayjob" in caplog.text
+
+    # Test delete with logging
+    caplog.clear()
+    mock_api_instance.delete_job.return_value = True
+
+    with caplog.at_level("INFO"):
+        result = rayjob.delete()
+
+    assert result is True
+    assert "Successfully deleted the RayJob test-rayjob" in caplog.text
+
+    # Test resubmit with logging
+    caplog.clear()
+    mock_api_instance.resubmit_job.return_value = {
+        "metadata": {"name": "test-rayjob"},
+        "spec": {"suspend": False},
+    }
+
+    with caplog.at_level("INFO"):
+        result = rayjob.resubmit()
+
+    assert result is True
+    assert "Successfully resubmitted the RayJob test-rayjob" in caplog.text
+
+
+def test_rayjob_initialization_logging(auto_mock_setup, caplog):
+    """Test RayJob initialization logging."""
+    with caplog.at_level("INFO"):
+        cluster_config = ManagedClusterConfig()
+        rayjob = RayJob(
+            job_name="test-job",
+            cluster_config=cluster_config,
+            entrypoint="python script.py",
+        )
+
+    assert "Creating new cluster: test-job-cluster" in caplog.text
+    assert "Initialized RayJob: test-job in namespace: test-namespace" in caplog.text
