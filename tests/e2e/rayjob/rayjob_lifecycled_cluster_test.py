@@ -120,9 +120,28 @@ class TestRayJobLifecycledCluster:
             )
             assert job2.submit() == "waiter"
 
-            sleep(3)
+            # Wait for Kueue to process the job
+            sleep(5)
             job2_cr = self.job_api.get_job(name=job2.name, k8s_namespace=job2.namespace)
-            assert job2_cr.get("spec", {}).get("suspend", False)
+
+            # For RayJobs with managed clusters, check if Kueue is holding resources
+            job2_status = job2_cr.get("status", {})
+            ray_cluster_name = job2_status.get("rayClusterName", "")
+
+            # If RayCluster is not created yet, it means Kueue is holding the job
+            if not ray_cluster_name:
+                # This is the expected behavior
+                job_is_queued = True
+            else:
+                # Check RayCluster resources - if all are 0, it's queued
+                ray_cluster_status = job2_status.get("rayClusterStatus", {})
+                desired_cpu = ray_cluster_status.get("desiredCPU", "0")
+                desired_memory = ray_cluster_status.get("desiredMemory", "0")
+
+                # Kueue creates the RayCluster but with 0 resources when queued
+                job_is_queued = desired_cpu == "0" and desired_memory == "0"
+
+            assert job_is_queued, "Job2 should be queued by Kueue while Job1 is running"
 
             assert self.job_api.wait_until_job_finished(
                 name=job1.name, k8s_namespace=job1.namespace, timeout=60

@@ -559,7 +559,7 @@ def create_limited_kueue_resources(self):
     if is_openshift():
         # MODH images need more memory, so higher quota but still limited to allow only 1 job
         cpu_quota = 3
-        memory_quota = "15Gi"
+        memory_quota = "8Gi"  # Reduced from 15Gi to ensure second job is suspended (1 job needs 7Gi)
     else:
         # Standard Ray images need less memory
         cpu_quota = 3
