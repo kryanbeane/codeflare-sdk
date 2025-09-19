@@ -1,4 +1,4 @@
-name: rayjob-e2e-with-kueue
+name: rayjob-e2e
 
 on:
   pull_request:
