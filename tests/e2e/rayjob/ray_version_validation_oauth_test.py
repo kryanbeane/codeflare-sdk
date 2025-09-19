@@ -11,10 +11,7 @@ from codeflare_sdk import (
     ManagedClusterConfig,
 )
 
-# This test validates Ray version compatibility checking for RayJob with cluster lifecycling scenarios
 
-
-@pytest.mark.openshift
 class TestRayJobRayVersionValidationOauth:
     def setup_method(self):
         initialize_kubernetes_client(self)
