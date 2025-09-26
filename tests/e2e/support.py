@@ -9,6 +9,7 @@ from codeflare_sdk.common.kubernetes_cluster.kube_api_helpers import (
     _kube_api_error_handling,
 )
 from codeflare_sdk.common.utils import constants
+from codeflare_sdk.common.utils.utils import get_ray_image_for_python_version
 
 
 def get_ray_cluster(cluster_name, namespace):

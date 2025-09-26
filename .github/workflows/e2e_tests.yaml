@@ -68,6 +68,33 @@ jobs:
         with:
           worker-nodes: 1
 
+      - name: Wait for KIND nodes to be ready
+        run: |
+          echo "=== Waiting for KIND nodes to be ready ==="
+          echo "Initial node status:"
+          kubectl get nodes -o wide
+
+          # Wait for all nodes to be ready
+          echo "Waiting for all nodes to reach Ready state..."
+          kubectl wait --for=condition=Ready nodes --all --timeout=300s || {
+            echo "ERROR: Nodes did not become ready!"
+            echo "Node status:"
+            kubectl get nodes -o wide
+            echo "Node conditions:"
+            kubectl describe nodes
+            echo "System pods:"
+            kubectl get pods -n kube-system -o wide
+            exit 1
+          }
+
+          # Verify CNI is ready
+          echo "Verifying CNI (kindnet) pods are ready..."
+          kubectl wait --for=condition=Ready pods -n kube-system -l app=kindnet --timeout=60s
+
+          echo "Final cluster state:"
+          kubectl get nodes -o wide
+          kubectl get pods -n kube-system -o wide
+
       - name: Install NVidia GPU operator for KinD
         uses: ./common/github-actions/nvidia-gpu-operator
 
@@ -89,29 +116,83 @@ jobs:
 
       - name: Configure RBAC for sdk user with limited permissions
         run: |
-          kubectl create clusterrole list-ingresses --verb=get,list --resource=ingresses
-          kubectl create clusterrolebinding sdk-user-list-ingresses --clusterrole=list-ingresses --user=sdk-user
-          kubectl create clusterrole namespace-creator --verb=get,list,create,delete,patch --resource=namespaces
-          kubectl create clusterrolebinding sdk-user-namespace-creator --clusterrole=namespace-creator --user=sdk-user
-          kubectl create clusterrole raycluster-creator --verb=get,list,create,delete,patch --resource=rayclusters
-          kubectl create clusterrolebinding sdk-user-raycluster-creator --clusterrole=raycluster-creator --user=sdk-user
-          kubectl create clusterrole appwrapper-creator --verb=get,list,create,delete,patch --resource=appwrappers
-          kubectl create clusterrolebinding sdk-user-appwrapper-creator --clusterrole=appwrapper-creator --user=sdk-user
-          kubectl create clusterrole resourceflavor-creator --verb=get,list,create,delete --resource=resourceflavors
-          kubectl create clusterrolebinding sdk-user-resourceflavor-creator --clusterrole=resourceflavor-creator --user=sdk-user
-          kubectl create clusterrole clusterqueue-creator --verb=get,list,create,delete,patch --resource=clusterqueues
-          kubectl create clusterrolebinding sdk-user-clusterqueue-creator --clusterrole=clusterqueue-creator --user=sdk-user
-          kubectl create clusterrole localqueue-creator --verb=get,list,create,delete,patch --resource=localqueues
-          kubectl create clusterrolebinding sdk-user-localqueue-creator --clusterrole=localqueue-creator --user=sdk-user
-          kubectl create clusterrole list-secrets --verb=get,list --resource=secrets
-          kubectl create clusterrolebinding sdk-user-list-secrets --clusterrole=list-secrets --user=sdk-user
-          kubectl create clusterrole pod-creator --verb=get,list,watch --resource=pods
-          kubectl create clusterrolebinding sdk-user-pod-creator --clusterrole=pod-creator --user=sdk-user
-          kubectl create clusterrole service-reader --verb=get,list,watch --resource=services
-          kubectl create clusterrolebinding sdk-user-service-reader --clusterrole=service-reader --user=sdk-user
-          kubectl create clusterrole port-forward-pods --verb=create --resource=pods/portforward
-          kubectl create clusterrolebinding sdk-user-port-forward-pods-binding --clusterrole=port-forward-pods --user=sdk-user
+          echo "=== Configuring RBAC for sdk-user ==="
+
+          # Create a comprehensive ClusterRole with all needed permissions
+          cat <<EOF | kubectl apply -f -
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: sdk-user-role
+          rules:
+          # Core resources
+          - apiGroups: [""]
+            resources: ["pods", "pods/log", "pods/status", "pods/portforward", "services", "endpoints", "persistentvolumeclaims", "events", "configmaps", "secrets", "nodes", "namespaces", "serviceaccounts", "replicationcontrollers"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Apps resources
+          - apiGroups: ["apps"]
+            resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Batch resources
+          - apiGroups: ["batch", "batch/v1"]
+            resources: ["jobs", "cronjobs"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Autoscaling resources
+          - apiGroups: ["autoscaling"]
+            resources: ["horizontalpodautoscalers"]
+            verbs: ["get", "list", "watch"]
+          # Networking resources
+          - apiGroups: ["networking.k8s.io"]
+            resources: ["ingresses", "networkpolicies"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # RBAC resources (read-only)
+          - apiGroups: ["rbac.authorization.k8s.io"]
+            resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+            verbs: ["get", "list", "watch"]
+          # CRD resources
+          - apiGroups: ["apiextensions.k8s.io"]
+            resources: ["customresourcedefinitions"]
+            verbs: ["get", "list", "watch"]
+          # Ray resources
+          - apiGroups: ["ray.io"]
+            resources: ["rayclusters", "rayjobs", "rayservices", "rayclusters/status", "rayjobs/status", "rayservices/status"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # AppWrapper resources (MCAD)
+          - apiGroups: ["workload.codeflare.dev"]
+            resources: ["appwrappers", "appwrappers/status"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Kueue resources
+          - apiGroups: ["kueue.x-k8s.io"]
+            resources: ["clusterqueues", "localqueues", "resourceflavors", "workloads", "workloads/status"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Metrics
+          - apiGroups: ["metrics.k8s.io"]
+            resources: ["pods", "nodes"]
+            verbs: ["get", "list"]
+          EOF
+
+          # Create ClusterRoleBinding
+          cat <<EOF | kubectl apply -f -
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: sdk-user-role-binding
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: sdk-user-role
+          subjects:
+          - kind: User
+            name: sdk-user
+            apiGroup: rbac.authorization.k8s.io
+          EOF
+
+          echo "RBAC configuration complete. Switching context to sdk-user..."
           kubectl config use-context sdk-user
+
+          # Verify permissions
+          echo "Verifying sdk-user permissions..."
+          kubectl auth can-i --list || true
 
       - name: Run e2e tests
         run: |

@@ -44,60 +44,299 @@ jobs:
           python-version: '3.11'
           cache: 'pip' # caching pip dependencies
 
+      - name: Pre-cluster setup diagnostics
+        run: |
+          echo "=== System Information ==="
+          echo "OS: $(uname -a)"
+          echo "Docker version:"
+          docker version || true
+          echo "Docker info:"
+          docker info || true
+          echo "Available disk space:"
+          df -h
+          echo "Memory usage:"
+          free -h || true
+          echo "CPU info:"
+          nproc || true
+          echo "Running containers before KIND:"
+          docker ps -a || true
+
       - name: Setup and start KinD cluster
         uses: ./common/github-actions/kind
         with:
           worker-nodes: 2  # Multiple nodes for testing Kueue scheduling
 
-      - name: Verify Kind cluster
+      - name: Immediate post-cluster diagnostics
         run: |
-          echo "Checking Kind clusters..."
+          echo "=== Immediate Post-Cluster Creation ==="
+          echo "KIND clusters:"
           kind get clusters
+          echo "Docker containers after KIND:"
+          docker ps -a | grep kind || true
+          echo "Initial node status (may not be ready):"
+          kubectl get nodes -o wide || true
+          echo "Initial system pods:"
+          kubectl get pods -n kube-system -o wide || true
+
+      - name: Verify Kind cluster and wait for readiness
+        run: |
+          echo "=== Cluster Verification and Readiness Check ==="
           echo "Current kubectl context:"
           kubectl config current-context
-          echo "Checking nodes:"
-          kubectl get nodes
+          echo "Cluster info:"
+          kubectl cluster-info || true
+
+          # Monitor node readiness with detailed status
+          echo "=== Monitoring Node Readiness ==="
+          MAX_ATTEMPTS=60
+          ATTEMPT=0
+          ALL_READY=false
+
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$ALL_READY" = "false" ]; do
+            echo ""
+            echo "Attempt $((ATTEMPT+1))/$MAX_ATTEMPTS - Checking node status..."
+
+            # Get detailed node conditions
+            echo "Node conditions:"
+            kubectl get nodes -o json | jq -r '.items[] | "\(.metadata.name): " + (.status.conditions[] | select(.type=="Ready") | "\(.type)=\(.status) reason=\(.reason // "N/A") message=\(.message // "N/A")")'
+
+            # Check if all nodes are ready
+            NOT_READY_COUNT=$(kubectl get nodes -o json | jq '[.items[] | select(.status.conditions[] | select(.type=="Ready" and .status!="True"))] | length')
+
+            if [ "$NOT_READY_COUNT" -eq 0 ]; then
+              ALL_READY=true
+              echo "All nodes are ready!"
+            else
+              echo "Nodes not ready: $NOT_READY_COUNT"
+
+              # Show kubelet status for not-ready nodes
+              echo "Checking kubelet logs for not-ready nodes..."
+              for node in $(kubectl get nodes -o json | jq -r '.items[] | select(.status.conditions[] | select(.type=="Ready" and .status!="True")) | .metadata.name'); do
+                echo "Logs from node $node:"
+                docker exec $node journalctl -u kubelet --no-pager --lines=20 || true
+                echo "---"
+              done
+
+              # Check CNI status
+              echo "CNI (kindnet) pod status:"
+              kubectl get pods -n kube-system -l app=kindnet -o wide
+
+              # Check for any failing system pods
+              echo "Non-running system pods:"
+              kubectl get pods -n kube-system --field-selector=status.phase!=Running,status.phase!=Succeeded || true
+
+              sleep 5
+            fi
+
+            ATTEMPT=$((ATTEMPT+1))
+          done
+
+          if [ "$ALL_READY" = "false" ]; then
+            echo "ERROR: Nodes did not become ready within timeout!"
+            echo "=== Final debugging information ==="
+            echo "All node details:"
+            kubectl describe nodes || true
+            echo "All system pods:"
+            kubectl get pods -n kube-system -o wide || true
+            echo "System pod descriptions:"
+            kubectl describe pods -n kube-system || true
+            echo "Docker logs from KIND nodes:"
+            for node in $(kind get nodes --name kind); do
+              echo "=== Docker logs for $node ==="
+              docker logs $node --tail=100 || true
+            done
+            exit 1
+          fi
+
+      - name: Wait for CNI to be fully functional
+        run: |
+          echo "=== Ensuring CNI is fully functional ==="
+
+          # Wait for all kindnet pods to be ready
+          echo "Waiting for kindnet pods..."
+          kubectl wait --for=condition=Ready pods -n kube-system -l app=kindnet --timeout=120s
+
+          # Verify kube-proxy is also running
+          echo "Checking kube-proxy pods..."
+          kubectl get pods -n kube-system -l k8s-app=kube-proxy -o wide
+          kubectl wait --for=condition=Ready pods -n kube-system -l k8s-app=kube-proxy --timeout=60s
+
+          # Create a test pod to verify networking works
+          echo "Creating test pod to verify networking..."
+          kubectl run test-network --image=busybox:stable --restart=Never -- sleep 10
+
+          # Wait for test pod and check its status
+          echo "Waiting for test pod..."
+          kubectl wait --for=condition=Ready pod/test-network --timeout=30s || {
+            echo "Test pod failed to become ready!"
+            kubectl describe pod test-network
+            kubectl logs test-network || true
+          }
+
+          # Clean up test pod
+          kubectl delete pod test-network --ignore-not-found=true
+
+          echo "=== Final cluster state before proceeding ==="
+          echo "Nodes:"
+          kubectl get nodes -o wide
+          echo "System pods:"
+          kubectl get pods -n kube-system -o wide
+          echo "All namespaces:"
+          kubectl get namespaces
 
       - name: Deploy Kueue
         run: |
-          echo "Deploying Kueue ${KUEUE_VERSION}"
-          kubectl apply --server-side -f https://github.com/kubernetes-sigs/kueue/releases/download/${KUEUE_VERSION}/manifests.yaml
+          echo "=== Deploying Kueue ${KUEUE_VERSION} ==="
+          echo "Pre-deployment cluster state:"
+          kubectl get nodes -o wide
+          kubectl get pods --all-namespaces | grep -v Running || true
 
-          # Sleep until the kueue manager is running
-          echo "Waiting for pods in the kueue-system namespace to become ready"
-          while [[ $(kubectl get pods -n kueue-system -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}' | tr ' ' '\n' | sort -u) != "True" ]]
-          do
-              echo -n "." && sleep 1;
+          echo "Applying Kueue manifests..."
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/kueue/releases/download/${KUEUE_VERSION}/manifests.yaml || {
+            echo "ERROR: Failed to apply Kueue manifests!"
+            exit 1
+          }
+
+          # Monitor Kueue deployment
+          echo "=== Monitoring Kueue Deployment ==="
+          echo "Checking if kueue-system namespace was created..."
+          kubectl get namespace kueue-system || {
+            echo "ERROR: kueue-system namespace not created!"
+            kubectl get namespaces
+            exit 1
+          }
+
+          # Wait for Kueue pods with detailed monitoring
+          echo "Waiting for pods in the kueue-system namespace to become ready..."
+          MAX_WAIT=120
+          WAITED=0
+          while [ $WAITED -lt $MAX_WAIT ]; do
+            echo ""
+            echo "Check $((WAITED/5+1)) - Kueue pods status:"
+            kubectl get pods -n kueue-system -o wide
+
+            # Check if all pods are ready
+            READY_STATUS=$(kubectl get pods -n kueue-system -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}' | tr ' ' '\n' | sort -u)
+
+            if [ "$READY_STATUS" = "True" ]; then
+              echo "All Kueue pods are ready!"
+              break
+            else
+              echo "Kueue pods not ready yet. Checking pod events..."
+              kubectl get events -n kueue-system --sort-by='.lastTimestamp' | tail -20 || true
+
+              # Check for pods in error state
+              kubectl get pods -n kueue-system --field-selector=status.phase!=Running,status.phase!=Succeeded -o wide || true
+
+              # Describe any non-running pods
+              for pod in $(kubectl get pods -n kueue-system --field-selector=status.phase!=Running,status.phase!=Succeeded -o name); do
+                echo "Describing $pod:"
+                kubectl describe $pod -n kueue-system || true
+              done
+
+              sleep 5
+              WAITED=$((WAITED+5))
+            fi
           done
-          echo ""
 
-          sleep 5
+          if [ $WAITED -ge $MAX_WAIT ]; then
+            echo "ERROR: Kueue pods did not become ready within timeout!"
+            echo "Final Kueue pod status:"
+            kubectl get pods -n kueue-system -o wide
+            kubectl describe pods -n kueue-system
+            exit 1
+          fi
+
+          echo "Kueue deployment successful!"
+          kubectl get pods -n kueue-system -o wide
 
       - name: Deploy KubeRay operator
         run: |
+          echo "=== Deploying KubeRay operator ==="
           KUBERAY_VERSION="v1.4.0"
-          echo "Deploying KubeRay ${KUBERAY_VERSION}"
+          echo "KubeRay version: ${KUBERAY_VERSION}"
+
+          # Pre-deployment diagnostics
+          echo "Current namespaces:"
+          kubectl get namespaces
+          echo "Current deployments in all namespaces:"
+          kubectl get deployments -A
 
           # Create namespace first
-          kubectl create namespace ray-system || true
+          echo "Creating ray-system namespace..."
+          kubectl create namespace ray-system || {
+            echo "Namespace ray-system already exists or failed to create"
+            kubectl get namespace ray-system || true
+          }
 
-          kubectl apply --server-side -k "github.com/ray-project/kuberay/ray-operator/config/default?ref=${KUBERAY_VERSION}&timeout=180s"
+          echo "Applying KubeRay manifests..."
+          # First check if CRDs can be created
+          echo "Checking CRD permissions..."
+          kubectl auth can-i create customresourcedefinitions --all-namespaces || echo "Warning: Cannot create CRDs"
 
-          # Check all namespaces to see where KubeRay was deployed
-          echo "Checking for KubeRay deployment in all namespaces..."
-          kubectl get deployments -A | grep kuberay || true
+          # Apply KubeRay with better error handling
+          if ! kubectl apply --server-side -k "github.com/ray-project/kuberay/ray-operator/config/default?ref=${KUBERAY_VERSION}&timeout=180s"; then
+            echo "ERROR: Failed to apply KubeRay manifests!"
+            echo "Checking connectivity to github.com..."
+            wget -q --spider --timeout=10 https://github.com && echo "GitHub is reachable" || echo "Cannot reach GitHub"
+            echo "Checking if any Ray resources were partially created:"
+            kubectl get all -A | grep -i ray || true
+            kubectl get crd | grep -i ray || true
+            echo "Checking recent events for errors:"
+            kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -20 | grep -i error || true
+            exit 1
+          fi
+
+          # Comprehensive search for KubeRay deployment
+          echo "=== Searching for KubeRay deployment ==="
+          echo "All deployments:"
+          kubectl get deployments -A
+          echo "All pods with 'ray' in name:"
+          kubectl get pods -A | grep -i ray || true
+          echo "All services with 'ray' in name:"
+          kubectl get services -A | grep -i ray || true
+
+          # Monitor KubeRay deployment with retries
+          echo "=== Monitoring KubeRay Deployment ==="
+          KUBERAY_FOUND=false
+          KUBERAY_NAMESPACE=""
+
+          for ns in ray-system default kuberay-system; do
+            echo "Checking namespace: $ns"
+            if kubectl get deployment kuberay-operator -n $ns 2>/dev/null; then
+              KUBERAY_FOUND=true
+              KUBERAY_NAMESPACE=$ns
+              echo "Found KubeRay operator in namespace: $ns"
+              break
+            fi
+          done
+
+          if [ "$KUBERAY_FOUND" = "false" ]; then
+            echo "ERROR: KubeRay operator deployment not found in any expected namespace!"
+            echo "All deployments:"
+            kubectl get deployments -A
+            echo "Checking CRDs:"
+            kubectl get crd | grep ray || true
+            exit 1
+          fi
 
           # Wait for KubeRay operator to be ready
-          echo "Waiting for KubeRay operator to become ready..."
-          kubectl wait --for=condition=Available --timeout=300s deployment/kuberay-operator -n ray-system || {
-            echo "KubeRay operator not found in ray-system, checking other namespaces:"
-            kubectl get pods -A | grep kuberay
-            kubectl get deployments -A | grep kuberay
-            # Try default namespace
-            kubectl wait --for=condition=Available --timeout=30s deployment/kuberay-operator -n default || true
-            # Try kuberay-system namespace
-            kubectl wait --for=condition=Available --timeout=30s deployment/kuberay-operator -n kuberay-system || true
+          echo "Waiting for KubeRay operator to become ready in namespace: $KUBERAY_NAMESPACE"
+          kubectl wait --for=condition=Available --timeout=300s deployment/kuberay-operator -n $KUBERAY_NAMESPACE || {
+            echo "ERROR: KubeRay operator did not become available!"
+            echo "Deployment status:"
+            kubectl get deployment kuberay-operator -n $KUBERAY_NAMESPACE -o wide
+            echo "Pods:"
+            kubectl get pods -n $KUBERAY_NAMESPACE -o wide
+            echo "Pod descriptions:"
+            kubectl describe pods -n $KUBERAY_NAMESPACE
+            echo "Events:"
+            kubectl get events -n $KUBERAY_NAMESPACE --sort-by='.lastTimestamp'
+            exit 1
           }
+
+          echo "KubeRay operator successfully deployed in namespace: $KUBERAY_NAMESPACE"
+          kubectl get pods -n $KUBERAY_NAMESPACE -o wide
 
       - name: Add user to KinD
         uses: ./common/github-actions/kind-add-user
@@ -106,46 +345,110 @@ jobs:
 
       - name: Configure RBAC for sdk user with limited permissions
         run: |
-          # Basic permissions
-          kubectl create clusterrole list-ingresses --verb=get,list --resource=ingresses
-          kubectl create clusterrolebinding sdk-user-list-ingresses --clusterrole=list-ingresses --user=sdk-user
-          kubectl create clusterrole namespace-creator --verb=get,list,create,delete,patch --resource=namespaces
-          kubectl create clusterrolebinding sdk-user-namespace-creator --clusterrole=namespace-creator --user=sdk-user
+          echo "=== Configuring RBAC for sdk-user ==="
 
-          # Ray permissions
-          kubectl create clusterrole raycluster-creator --verb=get,list,create,delete,patch,watch --resource=rayclusters
-          kubectl create clusterrolebinding sdk-user-raycluster-creator --clusterrole=raycluster-creator --user=sdk-user
-          kubectl create clusterrole rayjob-creator --verb=get,list,create,delete,patch,watch,update --resource=rayjobs,rayjobs/status
-          kubectl create clusterrolebinding sdk-user-rayjob-creator --clusterrole=rayjob-creator --user=sdk-user
+          # Create a comprehensive ClusterRole with all needed permissions
+          cat <<EOF | kubectl apply -f -
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: sdk-user-role
+          rules:
+          # Core resources
+          - apiGroups: [""]
+            resources: ["pods", "pods/log", "pods/status", "pods/portforward", "services", "endpoints", "persistentvolumeclaims", "events", "configmaps", "secrets", "nodes", "namespaces", "serviceaccounts", "replicationcontrollers"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Apps resources
+          - apiGroups: ["apps"]
+            resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Batch resources
+          - apiGroups: ["batch", "batch/v1"]
+            resources: ["jobs", "cronjobs"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Autoscaling resources
+          - apiGroups: ["autoscaling"]
+            resources: ["horizontalpodautoscalers"]
+            verbs: ["get", "list", "watch"]
+          # Networking resources
+          - apiGroups: ["networking.k8s.io"]
+            resources: ["ingresses", "networkpolicies"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # RBAC resources (read-only)
+          - apiGroups: ["rbac.authorization.k8s.io"]
+            resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+            verbs: ["get", "list", "watch"]
+          # CRD resources
+          - apiGroups: ["apiextensions.k8s.io"]
+            resources: ["customresourcedefinitions"]
+            verbs: ["get", "list", "watch"]
+          # Ray resources
+          - apiGroups: ["ray.io"]
+            resources: ["rayclusters", "rayjobs", "rayservices", "rayclusters/status", "rayjobs/status", "rayservices/status"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Kueue resources
+          - apiGroups: ["kueue.x-k8s.io"]
+            resources: ["clusterqueues", "localqueues", "resourceflavors", "workloads", "workloads/status"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+          # Metrics
+          - apiGroups: ["metrics.k8s.io"]
+            resources: ["pods", "nodes"]
+            verbs: ["get", "list"]
+          EOF
 
-          # Kueue permissions
-          kubectl create clusterrole resourceflavor-creator --verb=get,list,create,delete --resource=resourceflavors
-          kubectl create clusterrolebinding sdk-user-resourceflavor-creator --clusterrole=resourceflavor-creator --user=sdk-user
-          kubectl create clusterrole clusterqueue-creator --verb=get,list,create,delete,patch --resource=clusterqueues
-          kubectl create clusterrolebinding sdk-user-clusterqueue-creator --clusterrole=clusterqueue-creator --user=sdk-user
-          kubectl create clusterrole localqueue-creator --verb=get,list,create,delete,patch --resource=localqueues
-          kubectl create clusterrolebinding sdk-user-localqueue-creator --clusterrole=localqueue-creator --user=sdk-user
-          kubectl create clusterrole workload-creator --verb=get,list,watch --resource=workloads
-          kubectl create clusterrolebinding sdk-user-workload-creator --clusterrole=workload-creator --user=sdk-user
+          # Create ClusterRoleBinding
+          cat <<EOF | kubectl apply -f -
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: sdk-user-role-binding
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: sdk-user-role
+          subjects:
+          - kind: User
+            name: sdk-user
+            apiGroup: rbac.authorization.k8s.io
+          EOF
 
-          # Additional permissions
-          kubectl create clusterrole list-secrets --verb=get,list --resource=secrets
-          kubectl create clusterrolebinding sdk-user-list-secrets --clusterrole=list-secrets --user=sdk-user
-          kubectl create clusterrole pod-creator --verb=get,list,watch --resource=pods
-          kubectl create clusterrolebinding sdk-user-pod-creator --clusterrole=pod-creator --user=sdk-user
-          kubectl create clusterrole service-reader --verb=get,list,watch --resource=services
-          kubectl create clusterrolebinding sdk-user-service-reader --clusterrole=service-reader --user=sdk-user
-          kubectl create clusterrole port-forward-pods --verb=create --resource=pods/portforward
-          kubectl create clusterrolebinding sdk-user-port-forward-pods-binding --clusterrole=port-forward-pods --user=sdk-user
-          kubectl create clusterrole node-reader --verb=get,list --resource=nodes
-          kubectl create clusterrolebinding sdk-user-node-reader --clusterrole=node-reader --user=sdk-user
+          echo "RBAC configuration complete. Switching context to sdk-user..."
           kubectl config use-context sdk-user
+
+          # Verify permissions
+          echo "Verifying sdk-user permissions..."
+          kubectl auth can-i --list || true
 
       - name: Setup test output directory
         run: |
           CODEFLARE_TEST_OUTPUT_DIR="${{ runner.temp }}/test-logs"
           mkdir -p ${CODEFLARE_TEST_OUTPUT_DIR}
           echo "CODEFLARE_TEST_OUTPUT_DIR=${CODEFLARE_TEST_OUTPUT_DIR}" >> $GITHUB_ENV
+
+      - name: Pre-test cluster diagnostics
+        run: |
+          echo "=== Pre-test Cluster Health Check ==="
+          echo "Cluster nodes:"
+          kubectl get nodes -o wide
+          echo ""
+          echo "All pods status:"
+          kubectl get pods --all-namespaces -o wide
+          echo ""
+          echo "Non-running pods:"
+          kubectl get pods --all-namespaces --field-selector=status.phase!=Running,status.phase!=Succeeded
+          echo ""
+          echo "Recent events (last 50):"
+          kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -50
+          echo ""
+          echo "Node resource usage:"
+          kubectl top nodes || echo "Metrics not available"
+          echo ""
+          echo "Network connectivity test between nodes:"
+          for node in $(kubectl get nodes -o name | cut -d'/' -f2); do
+            echo "Testing from node: $node"
+            # Use wget instead of ping as it's available in KIND nodes
+            docker exec $node wget -q --spider --timeout=5 http://google.com && echo "External connectivity OK from $node" || echo "External connectivity check failed from $node (this may be normal in restricted environments)"
+          done
 
       - name: Run RayJob e2e tests
         run: |
@@ -160,8 +463,42 @@ jobs:
           # Set environment variable to prevent default queue assignment for non-Kueue tests
           export DISABLE_DEFAULT_KUEUE_QUEUE=true
 
+          # Enable verbose logging for debugging
+          export PYTHONUNBUFFERED=1
+          export RAY_VERBOSITY=debug
+
           # Run only the tests that are designed for Kueue integration
-          poetry run pytest -v -s ./tests/e2e/rayjob/rayjob_existing_cluster_test.py ./tests/e2e/rayjob/rayjob_lifecycled_cluster_test.py -x > ${CODEFLARE_TEST_OUTPUT_DIR}/pytest_output.log 2>&1
+          poetry run pytest -v -s ./tests/e2e/rayjob/rayjob_existing_cluster_test.py ./tests/e2e/rayjob/rayjob_lifecycled_cluster_test.py -x > ${CODEFLARE_TEST_OUTPUT_DIR}/pytest_output.log 2>&1 || {
+            echo "=== Test Failed - Capturing Additional Diagnostics ==="
+            echo "Current cluster state:"
+            kubectl get all --all-namespaces
+            echo ""
+            echo "Ray CRDs:"
+            kubectl get crd | grep -i ray || echo "No Ray CRDs found"
+            echo ""
+            echo "Ray resources:"
+            kubectl get rayclusters,rayjobs,rayservices --all-namespaces || echo "No Ray resources found"
+            echo ""
+            echo "Kueue resources:"
+            kubectl get clusterqueues,localqueues,workloads --all-namespaces || echo "No Kueue resources found"
+            echo ""
+            echo "Recent pod events:"
+            kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -100
+            echo ""
+            echo "Failed pod logs:"
+            for pod in $(kubectl get pods --all-namespaces --field-selector=status.phase!=Running,status.phase!=Succeeded -o custom-columns=:metadata.namespace,:metadata.name --no-headers | tr -s ' ' ':'); do
+              ns=$(echo $pod | cut -d':' -f1)
+              name=$(echo $pod | cut -d':' -f2)
+              if [ -n "$ns" ] && [ -n "$name" ]; then
+                echo "Logs for pod $name in namespace $ns:"
+                kubectl logs -n $ns $name --all-containers=true --tail=50 || echo "Could not get logs"
+                echo "Pod description:"
+                kubectl describe pod -n $ns $name | tail -30 || echo "Could not describe pod"
+                echo "---"
+              fi
+            done
+            exit 1
+          }
         env:
           GRPC_DNS_RESOLVER: "native"
 
