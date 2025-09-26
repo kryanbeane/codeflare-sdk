@@ -13,6 +13,7 @@ spec:
       metadata:
         labels:
           controller-tools.k8s.io: '1.0'
+          ray.io/cluster: unit-test-aw-kueue
         name: unit-test-aw-kueue
         namespace: ns
       spec:

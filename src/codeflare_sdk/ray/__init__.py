@@ -4,6 +4,14 @@ from .client import (
     RayJobClient,
 )
 
+from .rayjobs import (
+    RayJob,
+    ManagedClusterConfig,
+    RayJobDeploymentStatus,
+    CodeflareRayJobStatus,
+    RayJobInfo,
+)
+
 from .cluster import (
     Cluster,
     ClusterConfiguration,

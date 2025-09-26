@@ -12,3 +12,8 @@ SUPPORTED_PYTHON_VERSIONS = {
     "3.11": CUDA_PY311_RUNTIME_IMAGE,
     "3.12": CUDA_PY312_RUNTIME_IMAGE,
 }
+
+MOUNT_PATH = "/home/ray/scripts"
+
+# Default CUDA runtime image for backward compatibility
+CUDA_RUNTIME_IMAGE = CUDA_PY311_RUNTIME_IMAGE  # Default to Python 3.11

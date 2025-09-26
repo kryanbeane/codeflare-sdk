@@ -10,6 +10,7 @@ metadata:
     key1: value1
     key2: value2
     kueue.x-k8s.io/queue-name: local-queue-default
+    ray.io/cluster: test-all-params
   name: test-all-params
   namespace: ns
 spec:

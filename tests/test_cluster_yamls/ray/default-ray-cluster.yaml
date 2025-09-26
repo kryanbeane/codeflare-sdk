@@ -3,6 +3,7 @@ kind: RayCluster
 metadata:
   labels:
     controller-tools.k8s.io: '1.0'
+    ray.io/cluster: default-cluster
   name: default-cluster
   namespace: ns
 spec:
