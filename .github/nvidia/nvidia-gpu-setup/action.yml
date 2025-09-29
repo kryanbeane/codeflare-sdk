@@ -1,0 +1,30 @@
+name: "Setup NVidia GPU environment for KinD"
+description: "Step to setup NVidia GPU environment for KinD, based on https://www.substratus.ai/blog/kind-with-gpus"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Podman
+      run: |
+        sudo apt-get -y install podman
+        mkdir --parents ~/.config
+        cp -r /etc/containers ~/.config/containers
+      shell: bash
+
+    - name: Install yq
+      run: |
+        sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+        sudo chmod 777 /usr/local/bin/yq
+      shell: bash
+
+    - name: Setup NVIDIA Container Toolkit
+      run: |
+        sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
+        sudo systemctl restart docker
+        sudo sed -i "s/#accept-nvidia-visible-devices-as-volume-mounts = false/accept-nvidia-visible-devices-as-volume-mounts = true/" /etc/nvidia-container-runtime/config.toml
+      shell: bash
+
+    - name: List NVIDIA GPUs
+      run: |
+        nvidia-smi
+      shell: bash

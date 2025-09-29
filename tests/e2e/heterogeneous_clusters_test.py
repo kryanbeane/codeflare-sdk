@@ -1,8 +1,8 @@
 from time import sleep
-import time
 from codeflare_sdk import (
     Cluster,
     ClusterConfiguration,
+    TokenAuthentication,
 )
 
 from codeflare_sdk.common.kueue.kueue import list_local_queues
@@ -12,9 +12,10 @@ import pytest
 from support import *
 
 
-@pytest.mark.skip(reason="Skipping heterogenous cluster kind test")
+@pytest.mark.skip(reason="Skipping heterogeneous cluster test - currently disabled")
 @pytest.mark.kind
-class TestHeterogeneousClustersKind:
+@pytest.mark.openshift
+class TestHeterogeneousClusters:
     def setup_method(self):
         initialize_kubernetes_client(self)
 
@@ -23,6 +24,14 @@ class TestHeterogeneousClustersKind:
         delete_kueue_resources(self)
 
     @pytest.mark.nvidia_gpu
+    @pytest.mark.skipif(
+        is_openshift(), reason="GPU tests not supported on OpenShift test environment"
+    )
+    def test_heterogeneous_clusters_gpu(self):
+        create_namespace(self)
+        create_kueue_resources(self, 2, with_labels=True, with_tolerations=True)
+        self.run_heterogeneous_clusters(number_of_gpus=1)
+
     def test_heterogeneous_clusters(self):
         create_namespace(self)
         create_kueue_resources(self, 2, with_labels=True, with_tolerations=True)
@@ -31,6 +40,15 @@ class TestHeterogeneousClustersKind:
     def run_heterogeneous_clusters(
         self, gpu_resource_name="nvidia.com/gpu", number_of_gpus=0
     ):
+        # Platform-specific authentication
+        if is_openshift():
+            auth = TokenAuthentication(
+                token=run_oc_command(["whoami", "--show-token=true"]),
+                server=run_oc_command(["whoami", "--show-server=true"]),
+                skip_tls=True,
+            )
+            auth.login()
+
         for flavor in self.resource_flavors:
             node_labels = (
                 get_flavor_spec(self, flavor).get("spec", {}).get("nodeLabels", {})
@@ -42,6 +60,7 @@ class TestHeterogeneousClustersKind:
             queues = list_local_queues(namespace=self.namespace, flavors=[flavor])
             queue_name = queues[0]["name"] if queues else None
             print(f"Using flavor: {flavor}, Queue: {queue_name}")
+
             cluster = Cluster(
                 ClusterConfiguration(
                     name=cluster_name,
@@ -58,6 +77,7 @@ class TestHeterogeneousClustersKind:
                     worker_extended_resource_requests={
                         gpu_resource_name: number_of_gpus
                     },
+                    image=get_ray_image(),
                     write_to_file=True,
                     verify_tls=False,
                     local_queue=queue_name,

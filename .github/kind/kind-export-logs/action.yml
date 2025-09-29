@@ -1,0 +1,20 @@
+name: "Export all KinD pod logs"
+description: "Step to export all KinD pod logs"
+
+inputs:
+  output-directory:
+    description: "Directory to export log files to"
+    required: true
+  cluster-name:
+    description: "Name of the KinD cluster"
+    required: false
+    default: cluster
+
+runs:
+  using: "composite"
+  steps:
+    - name: Export all KinD pod logs
+      run: |
+        echo "Export all KinD pod logs to ${{ inputs.output-directory }}"
+        kind export logs ${{ inputs.output-directory }} --name ${{ inputs.cluster-name }}
+      shell: bash

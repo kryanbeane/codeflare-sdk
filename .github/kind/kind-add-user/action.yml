@@ -1,0 +1,42 @@
+name: "Add custom user to KinD"
+description: "Step to add custom user to KinD"
+
+inputs:
+  user-name:
+    description: "Name of the user added to KinD"
+    required: true
+  cluster-name:
+    description: "Name of the KinD cluster"
+    required: false
+    default: cluster
+
+runs:
+  using: "composite"
+  steps:
+    - name: Add user to KinD context
+      run: |
+        # Get KinD certificates
+        docker cp ${{ inputs.cluster-name }}-control-plane:/etc/kubernetes/pki/ca.crt .
+        docker cp ${{ inputs.cluster-name }}-control-plane:/etc/kubernetes/pki/ca.key .
+
+        # Generate certificates for new user
+        openssl genrsa -out user.key 2048
+        openssl req -new -key user.key -out user.csr -subj '/CN=${{ inputs.user-name }}/O=tenant'
+        openssl x509 -req -in user.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out user.crt -days 360
+
+        # Add generated certificated to KinD context
+        user_crt=$(base64 --wrap=0 user.crt)
+        user_key=$(base64 --wrap=0 user.key)
+        yq eval -i ".contexts += {\"context\": {\"cluster\": \"kind-${{ inputs.cluster-name }}\", \"user\": \"${{ inputs.user-name }}\"}, \"name\": \"${{ inputs.user-name }}\"}" $HOME/.kube/config
+        yq eval -i ".users += {\"name\": \"${{ inputs.user-name }}\", \"user\": {\"client-certificate-data\": \"$user_crt\", \"client-key-data\": \"$user_key\"}}" $HOME/.kube/config
+
+        cat $HOME/.kube/config
+
+        # Cleanup
+        rm --force ca.crt
+        rm --force ca.srl
+        rm --force ca.key
+        rm --force user.crt
+        rm --force user.key
+        rm --force user.csr
+      shell: bash

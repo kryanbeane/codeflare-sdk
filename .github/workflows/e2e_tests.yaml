@@ -32,24 +32,17 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Checkout common repo code
+      - name: Checkout Kuberay operator repository
         uses: actions/checkout@v4
         with:
-          repository: "project-codeflare/codeflare-common"
-          ref: "main"
-          path: "common"
-
-      - name: Checkout CodeFlare operator repository
-        uses: actions/checkout@v4
-        with:
-          repository: project-codeflare/codeflare-operator
-          path: codeflare-operator
+          repository: ray-project/kuberay
+          path: kuberay
 
       - name: Set Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: "./codeflare-operator/go.mod"
-          cache-dependency-path: "./codeflare-operator/go.sum"
+          go-version-file: './kuberay/ray-operator/go.mod'
+          cache-dependency-path: "./kuberay/ray-operator/go.sum"
 
       - name: Set up gotestfmt
         uses: gotesttools/gotestfmt-action@v2
@@ -63,15 +56,15 @@ jobs:
           cache: "pip" # caching pip dependencies
 
       - name: Setup NVidia GPU environment for KinD
-        uses: ./common/github-actions/nvidia-gpu-setup
+        uses: ./.github/nvidia/nvidia-gpu-setup
 
       - name: Setup and start KinD cluster
-        uses: ./common/github-actions/kind
+        uses: ./.github/kind
         with:
           worker-nodes: 1
 
       - name: Install NVidia GPU operator for KinD
-        uses: ./common/github-actions/nvidia-gpu-operator
+        uses: ./.github/nvidia/nvidia-gpu-operator
 
       - name: Wait for nodes to be ready
         run: |
@@ -95,16 +88,11 @@ jobs:
           # Final verification
           kubectl describe nodes | grep -E "Ready|NetworkReady|RuntimeReady|PodCIDR"
 
-      - name: Deploy CodeFlare stack
+      - name: Deploy Kuberay and Kueue
         id: deploy
         run: |
-          cd codeflare-operator
-          echo Setting up CodeFlare stack
+          echo Setting up Kuberay and Kueue
           make setup-e2e
-          echo Deploying CodeFlare operator
-          make deploy -e IMG="${CODEFLARE_OPERATOR_IMG}" -e ENV="e2e"
-          kubectl wait --timeout=120s --for=condition=Available=true deployment -n openshift-operators codeflare-operator-manager
-          cd ..
 
       - name: Verify CodeFlare deployment
         run: |
@@ -124,34 +112,44 @@ jobs:
             exit 1
           }
 
-          # Verify webhook certificates
-          echo "Checking CodeFlare operator webhook certificates..."
-          kubectl get secret -n openshift-operators codeflare-operator-webhook-server-cert -o jsonpath='{.data.ca\.crt}' | base64 -d | openssl x509 -noout -text || {
-            echo "Warning: Webhook certificate might be missing or invalid"
-          }
+          # Check if CodeFlare operator is deployed
+          if kubectl get deployment -n openshift-operators codeflare-operator-manager 2>/dev/null; then
+            echo "CodeFlare operator found, checking webhook certificates..."
+            kubectl get secret -n openshift-operators codeflare-operator-webhook-server-cert -o jsonpath='{.data.ca\.crt}' | base64 -d | openssl x509 -noout -text || {
+              echo "Warning: Webhook certificate might be missing or invalid"
+            }
+          else
+            echo "CodeFlare operator not found in openshift-operators namespace"
+          fi
 
       - name: Add user to KinD
-        uses: ./common/github-actions/kind-add-user
+        uses: ./.github/kind/kind-add-user
         with:
           user-name: sdk-user
 
       - name: Configure RBAC for sdk user with limited permissions
         run: |
-          kubectl create clusterrole list-ingresses --verb=get,list --resource=ingresses
+          kubectl create clusterrole list-ingresses --verb=get,list --resource=ingresses.networking.k8s.io
           kubectl create clusterrolebinding sdk-user-list-ingresses --clusterrole=list-ingresses --user=sdk-user
           kubectl create clusterrole namespace-creator --verb=get,list,create,delete,patch --resource=namespaces
           kubectl create clusterrolebinding sdk-user-namespace-creator --clusterrole=namespace-creator --user=sdk-user
-          kubectl create clusterrole raycluster-creator --verb=get,list,create,delete,patch,watch --resource=rayclusters
+          kubectl create clusterrole raycluster-creator --verb=get,list,create,delete,patch,watch,update --resource=rayclusters.ray.io,rayclusters/status
           kubectl create clusterrolebinding sdk-user-raycluster-creator --clusterrole=raycluster-creator --user=sdk-user
-          kubectl create clusterrole rayjob-creator --verb=get,list,create,delete,patch,watch,update --resource=rayjobs,rayjobs/status
+          kubectl create clusterrole rayjob-creator --verb=get,list,create,delete,patch,watch,update --resource=rayjobs.ray.io,rayjobs/status
           kubectl create clusterrolebinding sdk-user-rayjob-creator --clusterrole=rayjob-creator --user=sdk-user
-          kubectl create clusterrole resourceflavor-creator --verb=get,list,create,delete --resource=resourceflavors
+          kubectl create clusterrole appwrapper-creator --verb=get,list,create,delete,patch,watch,update --resource=appwrappers.workload.codeflare.dev
+          kubectl create clusterrolebinding sdk-user-appwrapper-creator --clusterrole=appwrapper-creator --user=sdk-user
+          kubectl create clusterrole appwrapper-status-creator --verb=get,update,patch --resource=appwrappers/status --apiGroup=workload.codeflare.dev
+          kubectl create clusterrolebinding sdk-user-appwrapper-status-creator --clusterrole=appwrapper-status-creator --user=sdk-user
+          kubectl create clusterrole crd-viewer --verb=get,list,watch --resource=customresourcedefinitions.apiextensions.k8s.io
+          kubectl create clusterrolebinding sdk-user-crd-viewer --clusterrole=crd-viewer --user=sdk-user
+          kubectl create clusterrole resourceflavor-creator --verb=get,list,create,delete,patch --resource=resourceflavors.kueue.x-k8s.io
           kubectl create clusterrolebinding sdk-user-resourceflavor-creator --clusterrole=resourceflavor-creator --user=sdk-user
-          kubectl create clusterrole clusterqueue-creator --verb=get,list,create,delete,patch --resource=clusterqueues
+          kubectl create clusterrole clusterqueue-creator --verb=get,list,create,delete,patch --resource=clusterqueues.kueue.x-k8s.io
           kubectl create clusterrolebinding sdk-user-clusterqueue-creator --clusterrole=clusterqueue-creator --user=sdk-user
-          kubectl create clusterrole localqueue-creator --verb=get,list,create,delete,patch --resource=localqueues
+          kubectl create clusterrole localqueue-creator --verb=get,list,create,delete,patch --resource=localqueues.kueue.x-k8s.io
           kubectl create clusterrolebinding sdk-user-localqueue-creator --clusterrole=localqueue-creator --user=sdk-user
-          kubectl create clusterrole workload-creator --verb=get,list,watch --resource=workloads
+          kubectl create clusterrole workload-creator --verb=get,list,watch,update,patch --resource=workloads.kueue.x-k8s.io,workloads/status
           kubectl create clusterrolebinding sdk-user-workload-creator --clusterrole=workload-creator --user=sdk-user
           kubectl create clusterrole list-secrets --verb=get,list --resource=secrets
           kubectl create clusterrolebinding sdk-user-list-secrets --clusterrole=list-secrets --user=sdk-user
@@ -161,9 +159,34 @@ jobs:
           kubectl create clusterrolebinding sdk-user-service-reader --clusterrole=service-reader --user=sdk-user
           kubectl create clusterrole port-forward-pods --verb=create --resource=pods/portforward
           kubectl create clusterrolebinding sdk-user-port-forward-pods-binding --clusterrole=port-forward-pods --user=sdk-user
+          kubectl create clusterrole pod-logs --verb=get --resource=pods/log
+          kubectl create clusterrolebinding sdk-user-pod-logs --clusterrole=pod-logs --user=sdk-user
+          kubectl create clusterrole pod-exec --verb=create,get --resource=pods/exec
+          kubectl create clusterrolebinding sdk-user-pod-exec --clusterrole=pod-exec --user=sdk-user
           kubectl create clusterrole node-reader --verb=get,list --resource=nodes
           kubectl create clusterrolebinding sdk-user-node-reader --clusterrole=node-reader --user=sdk-user
+          kubectl create clusterrole event-creator --verb=get,list,create,patch --resource=events
+          kubectl create clusterrolebinding sdk-user-event-creator --clusterrole=event-creator --user=sdk-user
+          kubectl create clusterrole configmap-creator --verb=get,list,create,update,patch,delete --resource=configmaps
+          kubectl create clusterrolebinding sdk-user-configmap-creator --clusterrole=configmap-creator --user=sdk-user
+          kubectl create clusterrole batch-job-creator --verb=get,list,watch,create,update,patch,delete --resource=jobs.batch
+          kubectl create clusterrolebinding sdk-user-batch-job-creator --clusterrole=batch-job-creator --user=sdk-user
+
+          # Wait for RBAC to propagate
+          echo "Waiting for RBAC permissions to propagate..."
+          sleep 5
+
+          # Verify CRDs are installed before switching context
+          echo "Checking if AppWrapper CRD is installed..."
+          kubectl get crd appwrappers.workload.codeflare.dev || echo "Warning: AppWrapper CRD not found"
+
           kubectl config use-context sdk-user
+
+          # Verify permissions
+          echo "Verifying RBAC permissions for sdk-user..."
+          kubectl auth can-i list rayclusters.ray.io --all-namespaces || echo "Warning: Cannot list RayClusters"
+          kubectl auth can-i list appwrappers.workload.codeflare.dev --all-namespaces || echo "Warning: Cannot list AppWrappers"
+          kubectl auth can-i list customresourcedefinitions || echo "Warning: Cannot list CRDs"
 
       - name: Verify cluster readiness before tests
         run: |
@@ -171,11 +194,14 @@ jobs:
           echo "Current context:"
           kubectl config current-context
 
+          echo -e "\nCurrent user:"
+          kubectl auth whoami || kubectl config view --minify -o jsonpath='{.users[0].name}'
+
           echo -e "\nNode status:"
           kubectl get nodes -o wide
 
           echo -e "\nSystem pods status:"
-          kubectl get pods -A | grep -E "(kube-system|ray-system|kueue-system|openshift-operators)" || true
+          kubectl get pods -A | grep -E "(kube-system|kueue-system|openshift-operators|default)" | grep -E "(kuberay|kueue|codeflare)" || true
 
           echo -e "\nChecking for any pods in error state:"
           kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded | grep -v "NAMESPACE" || echo "No pods in error state"
@@ -185,6 +211,9 @@ jobs:
 
           echo -e "\nRay CRDs:"
           kubectl get crd | grep ray || true
+
+          echo -e "\nAll CRDs (checking for AppWrapper):"
+          kubectl get crd | grep -E "(ray|appwrapper|workload)" || echo "No matching CRDs found"
 
       - name: Run e2e tests
         run: |
@@ -231,17 +260,24 @@ jobs:
       - name: Print CodeFlare operator logs
         if: always() && steps.deploy.outcome == 'success'
         run: |
-          echo "Printing CodeFlare operator logs"
-          kubectl logs -n openshift-operators --tail -1 -l app.kubernetes.io/name=codeflare-operator | tee ${CODEFLARE_TEST_OUTPUT_DIR}/codeflare-operator.log
+          echo "Checking for CodeFlare operator logs"
+          if kubectl get deployment -A codeflare-operator-manager 2>/dev/null; then
+            kubectl logs -A --tail -1 -l app.kubernetes.io/name=codeflare-operator | tee ${CODEFLARE_TEST_OUTPUT_DIR}/codeflare-operator.log || echo "Failed to get CodeFlare operator logs"
+          else
+            echo "CodeFlare operator not deployed, skipping logs"
+          fi
 
       - name: Print KubeRay operator logs
         if: always() && steps.deploy.outcome == 'success'
         run: |
           echo "Printing KubeRay operator logs"
-          kubectl logs -n ray-system --tail -1 -l app.kubernetes.io/name=kuberay | tee ${CODEFLARE_TEST_OUTPUT_DIR}/kuberay.log
+          # Try default namespace first (where we verified it was deployed)
+          kubectl logs -n default --tail -1 deployment/kuberay-operator | tee ${CODEFLARE_TEST_OUTPUT_DIR}/kuberay.log || \
+          kubectl logs -n ray-system --tail -1 -l app.kubernetes.io/name=kuberay | tee ${CODEFLARE_TEST_OUTPUT_DIR}/kuberay.log || \
+          echo "Failed to get KubeRay operator logs"
 
       - name: Export all KinD pod logs
-        uses: ./common/github-actions/kind-export-logs
+        uses: ./.github/kind/kind-export-logs
         if: always() && steps.deploy.outcome == 'success'
         with:
           output-directory: ${{ env.CODEFLARE_TEST_OUTPUT_DIR }}

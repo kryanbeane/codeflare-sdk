@@ -1,0 +1,44 @@
+name: "Install NVidia GPU operator for KinD"
+description: "Step to install NVidia GPU operator for KinD, based on https://www.substratus.ai/blog/kind-with-gpus"
+
+inputs:
+  enable-time-slicing:
+    description: "Enable time slicing for NVidia GPU operator"
+    required: false
+    default: 'false'
+  time-slicing-capacity:
+    description: "Time slicing GPU multiplier"
+    required: false
+    default: 4
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Helm
+      run: |
+        curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        chmod 700 get_helm.sh
+        ./get_helm.sh
+        sudo chmod 777 /usr/local/bin/helm
+      shell: bash
+
+    - name: Install NVidia GPU operator
+      run: |
+        helm repo add nvidia https://helm.ngc.nvidia.com/nvidia || true
+        helm repo update
+        helm install --wait --generate-name -n gpu-operator --create-namespace nvidia/gpu-operator --set driver.enabled=false
+      shell: bash
+
+    - name: Print KinD node
+      run: |
+        kubectl describe nodes
+      shell: bash
+
+    - name: Configuring Time-Slicing for NVidia GPU operator
+      if: inputs.enable-time-slicing == 'true'
+      run: |
+        sudo sed -i "s/<REPLICAS>/${{ inputs.time-slicing-capacity }}/" ${GITHUB_ACTION_PATH}/resources/time-slicing-config.yaml
+        kubectl create -n gpu-operator -f ${GITHUB_ACTION_PATH}/resources/time-slicing-config.yaml
+        kubectl patch clusterpolicies.nvidia.com/cluster-policy -n gpu-operator --type merge -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}'
+        kubectl wait --timeout=120s --for=jsonpath='{.status.capacity.nvidia\.com/gpu}'=${{ inputs.time-slicing-capacity }} node/cluster-control-plane
+      shell: bash
