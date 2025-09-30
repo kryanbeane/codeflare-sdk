@@ -5,14 +5,13 @@ on:
   pull_request:
     branches:
       - main
-      - "release-*"
+      - 'release-*'
       - ray-jobs-feature
-      - kueue-integration
     paths-ignore:
-      - "docs/**"
-      - "**.adoc"
-      - "**.md"
-      - "LICENSE"
+      - 'docs/**'
+      - '**.adoc'
+      - '**.md'
+      - 'LICENSE'
 
 concurrency:
   group: ${{ github.head_ref }}-${{ github.workflow }}
@@ -21,6 +20,7 @@ concurrency:
 env:
   CODEFLARE_OPERATOR_IMG: "quay.io/project-codeflare/codeflare-operator:dev"
   KUEUE_VERSION: "v0.13.4"
+  KUERAY_VERSION: "v1.4.0"
 
 jobs:
   kubernetes:
@@ -35,9 +35,9 @@ jobs:
       - name: Checkout common repo code
         uses: actions/checkout@v4
         with:
-          repository: "project-codeflare/codeflare-common"
-          ref: "main"
-          path: "common"
+          repository: 'project-codeflare/codeflare-common'
+          ref: 'main'
+          path: 'common'
 
       - name: Checkout CodeFlare operator repository
         uses: actions/checkout@v4
@@ -48,7 +48,7 @@ jobs:
       - name: Set Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: "./codeflare-operator/go.mod"
+          go-version-file: './codeflare-operator/go.mod'
           cache-dependency-path: "./codeflare-operator/go.sum"
 
       - name: Set up gotestfmt
@@ -59,8 +59,8 @@ jobs:
       - name: Set up specific Python version
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: "pip" # caching pip dependencies
+          python-version: '3.12'
+          cache: 'pip' # caching pip dependencies
 
       - name: Setup NVidia GPU environment for KinD
         uses: ./common/github-actions/nvidia-gpu-setup
@@ -73,62 +73,16 @@ jobs:
       - name: Install NVidia GPU operator for KinD
         uses: ./common/github-actions/nvidia-gpu-operator
 
-      - name: Wait for nodes to be ready
-        run: |
-          echo "Waiting for all nodes to be ready..."
-          kubectl wait --for=condition=Ready nodes --all --timeout=300s
-
-          echo "Checking node status..."
-          kubectl get nodes -o wide
-
-          echo "Checking for CNI readiness..."
-          for i in {1..30}; do
-            if kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep -v "True"; then
-              echo "Waiting for CNI to initialize (attempt $i/30)..."
-              sleep 10
-            else
-              echo "All nodes are ready!"
-              break
-            fi
-          done
-
-          # Final verification
-          kubectl describe nodes | grep -E "Ready|NetworkReady|RuntimeReady|PodCIDR"
-
       - name: Deploy CodeFlare stack
         id: deploy
         run: |
           cd codeflare-operator
           echo Setting up CodeFlare stack
-          make setup-e2e
+          make setup-e2e KUEUE_VERSION=${KUEUE_VERSION} KUERAY_VERSION=${KUERAY_VERSION}
           echo Deploying CodeFlare operator
           make deploy -e IMG="${CODEFLARE_OPERATOR_IMG}" -e ENV="e2e"
           kubectl wait --timeout=120s --for=condition=Available=true deployment -n openshift-operators codeflare-operator-manager
           cd ..
-
-      - name: Verify CodeFlare deployment
-        run: |
-          # Wait for Kueue to be ready
-          echo "Waiting for Kueue controller to be ready..."
-          kubectl wait --for=condition=Available --timeout=300s deployment -n kueue-system kueue-controller-manager || {
-            echo "Kueue deployment status:"
-            kubectl get all -n kueue-system
-            exit 1
-          }
-
-          # Wait for KubeRay to be ready
-          echo "Waiting for KubeRay operator to be ready..."
-          kubectl wait --for=condition=Available --timeout=300s deployment -n default kuberay-operator || {
-            echo "KubeRay deployment status:"
-            kubectl get all -n default
-            exit 1
-          }
-
-          # Verify webhook certificates
-          echo "Checking CodeFlare operator webhook certificates..."
-          kubectl get secret -n openshift-operators codeflare-operator-webhook-server-cert -o jsonpath='{.data.ca\.crt}' | base64 -d | openssl x509 -noout -text || {
-            echo "Warning: Webhook certificate might be missing or invalid"
-          }
 
       - name: Add user to KinD
         uses: ./common/github-actions/kind-add-user
@@ -137,31 +91,20 @@ jobs:
 
       - name: Configure RBAC for sdk user with limited permissions
         run: |
-          # CRD permissions for discovering resource types
-          kubectl create clusterrole crd-reader --verb=get,list,watch --resource=customresourcedefinitions.apiextensions.k8s.io
-          kubectl create clusterrolebinding sdk-user-crd-reader --clusterrole=crd-reader --user=sdk-user
-
-          # AppWrapper permissions for CodeFlare workloads
-          kubectl create clusterrole appwrapper-creator --verb=get,list,watch,create,update,patch,delete --resource=appwrappers.workload.codeflare.dev
-          kubectl create clusterrolebinding sdk-user-appwrapper-creator --clusterrole=appwrapper-creator --user=sdk-user
-
-          # Existing permissions
           kubectl create clusterrole list-ingresses --verb=get,list --resource=ingresses
           kubectl create clusterrolebinding sdk-user-list-ingresses --clusterrole=list-ingresses --user=sdk-user
           kubectl create clusterrole namespace-creator --verb=get,list,create,delete,patch --resource=namespaces
           kubectl create clusterrolebinding sdk-user-namespace-creator --clusterrole=namespace-creator --user=sdk-user
-          kubectl create clusterrole raycluster-creator --verb=get,list,create,delete,patch,watch --resource=rayclusters.ray.io
+          kubectl create clusterrole raycluster-creator --verb=get,list,create,delete,patch --resource=rayclusters
           kubectl create clusterrolebinding sdk-user-raycluster-creator --clusterrole=raycluster-creator --user=sdk-user
-          kubectl create clusterrole rayjob-creator --verb=get,list,create,delete,patch,watch,update --resource=rayjobs.ray.io,rayjobs/status
-          kubectl create clusterrolebinding sdk-user-rayjob-creator --clusterrole=rayjob-creator --user=sdk-user
-          kubectl create clusterrole resourceflavor-creator --verb=get,list,create,delete --resource=resourceflavors.kueue.x-k8s.io
+          kubectl create clusterrole appwrapper-creator --verb=get,list,create,delete,patch --resource=appwrappers
+          kubectl create clusterrolebinding sdk-user-appwrapper-creator --clusterrole=appwrapper-creator --user=sdk-user
+          kubectl create clusterrole resourceflavor-creator --verb=get,list,create,delete --resource=resourceflavors
           kubectl create clusterrolebinding sdk-user-resourceflavor-creator --clusterrole=resourceflavor-creator --user=sdk-user
-          kubectl create clusterrole clusterqueue-creator --verb=get,list,create,delete,patch --resource=clusterqueues.kueue.x-k8s.io
+          kubectl create clusterrole clusterqueue-creator --verb=get,list,create,delete,patch --resource=clusterqueues
           kubectl create clusterrolebinding sdk-user-clusterqueue-creator --clusterrole=clusterqueue-creator --user=sdk-user
-          kubectl create clusterrole localqueue-creator --verb=get,list,create,delete,patch --resource=localqueues.kueue.x-k8s.io
+          kubectl create clusterrole localqueue-creator --verb=get,list,create,delete,patch --resource=localqueues
           kubectl create clusterrolebinding sdk-user-localqueue-creator --clusterrole=localqueue-creator --user=sdk-user
-          kubectl create clusterrole workload-creator --verb=get,list,watch --resource=workloads.kueue.x-k8s.io
-          kubectl create clusterrolebinding sdk-user-workload-creator --clusterrole=workload-creator --user=sdk-user
           kubectl create clusterrole list-secrets --verb=get,list --resource=secrets
           kubectl create clusterrolebinding sdk-user-list-secrets --clusterrole=list-secrets --user=sdk-user
           kubectl create clusterrole pod-creator --verb=get,list,watch --resource=pods
@@ -170,54 +113,31 @@ jobs:
           kubectl create clusterrolebinding sdk-user-service-reader --clusterrole=service-reader --user=sdk-user
           kubectl create clusterrole port-forward-pods --verb=create --resource=pods/portforward
           kubectl create clusterrolebinding sdk-user-port-forward-pods-binding --clusterrole=port-forward-pods --user=sdk-user
-          kubectl create clusterrole node-reader --verb=get,list --resource=nodes
-          kubectl create clusterrolebinding sdk-user-node-reader --clusterrole=node-reader --user=sdk-user
           kubectl config use-context sdk-user
-
-      - name: Verify cluster readiness before tests
-        run: |
-          echo "=== Pre-test cluster verification ==="
-          echo "Current context:"
-          kubectl config current-context
-
-          echo -e "\nNode status:"
-          kubectl get nodes -o wide
-
-          echo -e "\nSystem pods status:"
-          kubectl get pods -A | grep -E "(kube-system|ray-system|kueue-system|openshift-operators)" || true
-
-          echo -e "\nChecking for any pods in error state:"
-          kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded | grep -v "NAMESPACE" || echo "No pods in error state"
-
-          echo -e "\nKueue resources:"
-          kubectl get resourceflavors,clusterqueues,localqueues -A || true
-
-          echo -e "\nRay CRDs:"
-          kubectl get crd | grep ray || true
 
       - name: Run e2e tests
         run: |
-          export CODEFLARE_TEST_OUTPUT_DIR="${{ runner.temp }}/test-logs"
-          mkdir -p ${CODEFLARE_TEST_OUTPUT_DIR}
+          export CODEFLARE_TEST_OUTPUT_DIR=${{ env.TEMP_DIR }}
           echo "CODEFLARE_TEST_OUTPUT_DIR=${CODEFLARE_TEST_OUTPUT_DIR}" >> $GITHUB_ENV
 
           set -euo pipefail
           pip install poetry
           poetry install --with test,docs
           echo "Running e2e tests..."
-          poetry run pytest -v -s ./tests/e2e -m 'kind and nvidia_gpu' > ${CODEFLARE_TEST_OUTPUT_DIR}/e2e-pytest_output.log 2>&1
+          poetry run pytest -v -s ./tests/e2e -m 'kind and nvidia_gpu' > ${CODEFLARE_TEST_OUTPUT_DIR}/pytest_output.log 2>&1
         env:
           GRPC_DNS_RESOLVER: "native"
 
-      - name: Run RayJob e2e tests
+      - name: Run RayJob E2E tests
         run: |
-          set -euo pipefail
-          echo "Running RayJob e2e tests..."
-          # Set environment variable to prevent default queue assignment for non-Kueue tests
-          export DISABLE_DEFAULT_KUEUE_QUEUE=true
+          export CODEFLARE_TEST_OUTPUT_DIR=${{ env.TEMP_DIR }}
+          echo "CODEFLARE_TEST_OUTPUT_DIR=${CODEFLARE_TEST_OUTPUT_DIR}" >> $GITHUB_ENV
 
-          # Run only the tests that are designed for Kueue integration
-          poetry run pytest -v -s ./tests/e2e/rayjob/ -x > ${CODEFLARE_TEST_OUTPUT_DIR}/rayjob_pytest_output.log 2>&1
+          set -euo pipefail
+          pip install poetry
+          poetry install --with test,docs
+          echo "Running RayJob e2e tests..."
+          poetry run pytest -v -s ./tests/e2e/rayjob > ${CODEFLARE_TEST_OUTPUT_DIR}/pytest_output_rayjob.log 2>&1
         env:
           GRPC_DNS_RESOLVER: "native"
 
@@ -225,17 +145,18 @@ jobs:
         if: always() && steps.deploy.outcome == 'success'
         run: kubectl config use-context kind-cluster
 
-      - name: Print RayJob E2E Pytest output log
+      - name: Print Pytest output log
         if: always() && steps.deploy.outcome == 'success'
         run: |
-          echo "Printing RayJob Pytest output logs"
-          cat ${CODEFLARE_TEST_OUTPUT_DIR}/rayjob_pytest_output.log || echo "No RayJob test output found"
+          echo "Printing Pytest output logs"
+          cat ${CODEFLARE_TEST_OUTPUT_DIR}/pytest_output.log
 
-      - name: Print E2E Pytest output log
+      - name: Print RayJobPytest output log
         if: always() && steps.deploy.outcome == 'success'
         run: |
-          echo "Printing E2E Pytest output logs"
-          cat ${CODEFLARE_TEST_OUTPUT_DIR}/e2e-pytest_output.log || echo "No E2E test output found"
+          echo "Printing Pytest output logs"
+          cat ${CODEFLARE_TEST_OUTPUT_DIR}/pytest_output_rayjob.log
+
 
       - name: Print CodeFlare operator logs
         if: always() && steps.deploy.outcome == 'success'
@@ -253,7 +174,7 @@ jobs:
         uses: ./common/github-actions/kind-export-logs
         if: always() && steps.deploy.outcome == 'success'
         with:
-          output-directory: ${{ env.CODEFLARE_TEST_OUTPUT_DIR }}
+          output-directory: ${CODEFLARE_TEST_OUTPUT_DIR}
 
       - name: Upload logs
         uses: actions/upload-artifact@v4
@@ -263,4 +184,3 @@ jobs:
           retention-days: 10
           path: |
             ${{ env.CODEFLARE_TEST_OUTPUT_DIR }}/**/*.log
-          if-no-files-found: warn

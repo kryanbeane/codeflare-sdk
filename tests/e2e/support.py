@@ -243,9 +243,9 @@ def create_cluster_queue(self, cluster_queue, flavor):
                         {
                             "name": flavor,
                             "resources": [
-                                {"name": "cpu", "nominalQuota": 10},
+                                {"name": "cpu", "nominalQuota": 9},
                                 {"name": "memory", "nominalQuota": "36Gi"},
-                                {"name": "nvidia.com/gpu", "nominalQuota": 0},
+                                {"name": "nvidia.com/gpu", "nominalQuota": 1},
                             ],
                         },
                     ],
@@ -383,9 +383,6 @@ def create_kueue_resources(
 
 
 def delete_kueue_resources(self):
-    # Delete if given cluster-queue exists
-    if not hasattr(self, "cluster_queues"):
-        return
     for cq in self.cluster_queues:
         try:
             self.custom_api.delete_cluster_custom_object(

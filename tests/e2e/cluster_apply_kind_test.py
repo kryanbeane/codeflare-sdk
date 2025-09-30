@@ -1,8 +1,8 @@
+from calendar import c
+from time import sleep
 from codeflare_sdk import Cluster, ClusterConfiguration
 import pytest
-import time
 from kubernetes import client
-from codeflare_sdk.common.utils import constants
 
 from support import (
     initialize_kubernetes_client,
@@ -40,7 +40,6 @@ class TestRayClusterApply:
             worker_cpu_limits="1",
             worker_memory_requests="1Gi",
             worker_memory_limits="2Gi",
-            image=f"rayproject/ray:{constants.RAY_VERSION}",
             write_to_file=True,
             verify_tls=False,
         )
@@ -50,9 +49,9 @@ class TestRayClusterApply:
         cluster.apply()
 
         # Wait for the cluster to be ready
-        cluster.wait_ready(dashboard_check=False)
+        cluster.wait_ready()
         status, ready = cluster.status()
-        assert ready, f"Cluster {cluster_name} is not ready: {status}"
+        assert ready, f"Cluster {cluster_name} is not ready"
 
         # Verify the cluster is created
         ray_cluster = get_ray_cluster(cluster_name, namespace)
@@ -61,7 +60,7 @@ class TestRayClusterApply:
             ray_cluster["spec"]["workerGroupSpecs"][0]["replicas"] == 1
         ), "Initial worker count does not match"
 
-        # Update configuration with 2 workers
+        # Update configuration with 3 workers
         updated_config = ClusterConfiguration(
             name=cluster_name,
             namespace=namespace,
@@ -74,7 +73,6 @@ class TestRayClusterApply:
             worker_cpu_limits="1",
             worker_memory_requests="1Gi",
             worker_memory_limits="2Gi",
-            image=f"rayproject/ray:{constants.RAY_VERSION}",
             write_to_file=True,
             verify_tls=False,
         )
@@ -83,15 +81,10 @@ class TestRayClusterApply:
         cluster.config = updated_config
         cluster.apply()
 
-        # Give Kubernetes a moment to process the update
-        time.sleep(5)
-
         # Wait for the updated cluster to be ready
-        cluster.wait_ready(dashboard_check=False)
+        cluster.wait_ready()
         updated_status, updated_ready = cluster.status()
-        assert (
-            updated_ready
-        ), f"Cluster {cluster_name} is not ready after update: {updated_status}"
+        assert updated_ready, f"Cluster {cluster_name} is not ready after update"
 
         # Verify the cluster is updated
         updated_ray_cluster = get_ray_cluster(cluster_name, namespace)
@@ -101,19 +94,67 @@ class TestRayClusterApply:
 
         # Clean up
         cluster.down()
+        sleep(10)
+        ray_cluster = get_ray_cluster(cluster_name, namespace)
+        assert ray_cluster is None, "Cluster was not deleted successfully"
 
-        # Wait for deletion to complete (finalizers may delay deletion)
-        max_wait = 30  # seconds
-        wait_interval = 2
-        elapsed = 0
+    def test_apply_invalid_update(self):
+        self.setup_method()
+        create_namespace(self)
 
-        while elapsed < max_wait:
-            ray_cluster = get_ray_cluster(cluster_name, namespace)
-            if ray_cluster is None:
-                break
-            time.sleep(wait_interval)
-            elapsed += wait_interval
+        cluster_name = "test-cluster-apply-invalid"
+        namespace = self.namespace
 
-        assert (
-            ray_cluster is None
-        ), f"Cluster was not deleted successfully after {max_wait}s"
+        # Initial configuration
+        initial_config = ClusterConfiguration(
+            name=cluster_name,
+            namespace=namespace,
+            num_workers=1,
+            head_cpu_requests="500m",
+            head_cpu_limits="1",
+            head_memory_requests="1Gi",
+            head_memory_limits="2Gi",
+            worker_cpu_requests="500m",
+            worker_cpu_limits="1",
+            worker_memory_requests="1Gi",
+            worker_memory_limits="2Gi",
+            write_to_file=True,
+            verify_tls=False,
+        )
+
+        # Create the cluster
+        cluster = Cluster(initial_config)
+        cluster.apply()
+
+        # Wait for the cluster to be ready
+        cluster.wait_ready()
+        status, ready = cluster.status()
+        assert ready, f"Cluster {cluster_name} is not ready"
+
+        # Update with an invalid configuration (e.g., immutable field change)
+        invalid_config = ClusterConfiguration(
+            name=cluster_name,
+            namespace=namespace,
+            num_workers=2,
+            head_cpu_requests="1",
+            head_cpu_limits="2",  # Changing CPU limits (immutable)
+            head_memory_requests="1Gi",
+            head_memory_limits="2Gi",
+            worker_cpu_requests="500m",
+            worker_cpu_limits="1",
+            worker_memory_requests="1Gi",
+            worker_memory_limits="2Gi",
+            write_to_file=True,
+            verify_tls=False,
+        )
+
+        # Try to apply the invalid configuration and expect failure
+        cluster.config = invalid_config
+        cluster.apply()
+
+        cluster.wait_ready()
+        status, ready = cluster.status()
+        assert ready, f"Cluster {cluster_name} is not ready"
+
+        # Clean up
+        cluster.down()

@@ -322,8 +322,10 @@ def test_cluster_uris(mocker):
     mocker.patch(
         "kubernetes.client.NetworkingV1Api.list_namespaced_ingress",
     )
-    # When no ingress/route/service is found, the method should return None
-    assert cluster.cluster_dashboard_uri() is None
+    assert (
+        cluster.cluster_dashboard_uri()
+        == "Dashboard not available yet, have you run cluster.up()?"
+    )
 
     mocker.patch(
         "codeflare_sdk.ray.cluster.cluster._is_openshift_cluster", return_value=True

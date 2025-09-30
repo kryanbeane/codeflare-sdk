@@ -43,11 +43,13 @@ class TestRayClusterSDKAppWrapperKind:
                 namespace=self.namespace,
                 num_workers=1,
                 head_cpu_requests="500m",
-                head_cpu_limits="500m",
+                head_cpu_limits="1",
+                head_memory_requests="1Gi",
+                head_memory_limits="2Gi",
                 worker_cpu_requests="500m",
                 worker_cpu_limits=1,
-                worker_memory_requests=1,
-                worker_memory_limits=4,
+                worker_memory_requests="1Gi",
+                worker_memory_limits="2Gi",
                 worker_extended_resource_requests={gpu_resource_name: number_of_gpus},
                 write_to_file=True,
                 verify_tls=False,
@@ -55,7 +57,7 @@ class TestRayClusterSDKAppWrapperKind:
             )
         )
 
-        cluster.up()
+        cluster.apply()
 
         cluster.status()
 
