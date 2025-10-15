@@ -117,6 +117,23 @@ class RayJob:
 
         # Convert dict to RuntimeEnv if needed for user convenience
         if isinstance(runtime_env, dict):
+            # Resolve pip paths relative to working_dir if applicable
+            if "working_dir" in runtime_env and "pip" in runtime_env:
+                working_dir = runtime_env["working_dir"]
+                pip_spec = runtime_env["pip"]
+
+                # If pip is relative file path and working_dir exists locally
+                if (
+                    isinstance(pip_spec, str)
+                    and os.path.isdir(working_dir)
+                    and not os.path.isabs(pip_spec)
+                    and not os.path.isfile(pip_spec)
+                ):  # Not already absolute/found
+                    resolved_pip_path = os.path.join(working_dir, pip_spec)
+                    if os.path.isfile(resolved_pip_path):
+                        runtime_env = runtime_env.copy()  # Don't mutate input
+                        runtime_env["pip"] = resolved_pip_path
+
             self.runtime_env = RuntimeEnv(**runtime_env)
         else:
             self.runtime_env = runtime_env

@@ -226,9 +226,27 @@ def process_runtime_env(
 
     # Handle pip dependencies
     if runtime_env_dict and "pip" in runtime_env_dict:
-        pip_deps = process_pip_dependencies(job, runtime_env_dict["pip"])
-        if pip_deps:
-            processed_env["pip"] = pip_deps
+        pip_spec = runtime_env_dict["pip"]
+
+        # Check if pip came from a file (Ray's parsed format) vs direct list
+        if isinstance(pip_spec, dict) and "packages" in pip_spec:
+            # Ray parsed a file - preserve file path instead of extracting packages
+            pip_file_path = _get_pip_file_path(job, runtime_env_dict, files)
+            if pip_file_path:
+                processed_env["pip"] = pip_file_path
+                logger.info(f"Using pip file: {pip_file_path}")
+            else:
+                # Fallback to packages if we can't determine file path
+                processed_env["pip"] = pip_spec["packages"]
+                logger.info(
+                    f"Using pip dependencies: {len(pip_spec['packages'])} packages"
+                )
+        elif isinstance(pip_spec, list):
+            # Direct list input - use as-is
+            processed_env["pip"] = pip_spec
+            logger.info(f"Using pip dependencies: {len(pip_spec)} packages")
+        else:
+            logger.warning(f"Unexpected pip specification format: {type(pip_spec)}")
 
     # Handle working_dir
     if runtime_env_dict and "working_dir" in runtime_env_dict:
@@ -258,65 +276,71 @@ def process_runtime_env(
     return None
 
 
-def process_pip_dependencies(job: RayJob, pip_spec) -> Optional[List[str]]:
+def _get_pip_file_path(
+    job: RayJob,
+    runtime_env_dict: Dict[str, Any],
+    files: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
     """
-    Process pip dependencies from runtime_env.
+    Determine the pip file path for the container environment.
 
     Args:
-        pip_spec: Can be a list of packages, a string path to requirements.txt, or dict
+        job: RayJob instance
+        runtime_env_dict: Parsed runtime environment dict
+        files: Files being packaged (for single file case)
 
     Returns:
-        List of pip dependencies
+        Container path to pip file, or None if not file-based
     """
-    if isinstance(pip_spec, list):
-        # Already a list of dependencies
-        logger.info(f"Using provided pip dependencies: {len(pip_spec)} packages")
-        return pip_spec
-    elif isinstance(pip_spec, str):
-        # Assume it's a path to requirements.txt
-        return parse_requirements_file(pip_spec)
-    elif isinstance(pip_spec, dict):
-        # Handle dict format (e.g., {"packages": [...], "pip_check": False})
-        if "packages" in pip_spec:
-            logger.info(
-                f"Using pip dependencies from dict: {len(pip_spec['packages'])} packages"
-            )
-            return pip_spec["packages"]
+    # Case 1: working_dir case - pip file should be in the working directory
+    if "working_dir" in runtime_env_dict:
+        working_dir = runtime_env_dict["working_dir"]
+        if os.path.isdir(working_dir):
+            # Local working_dir will be unzipped to UNZIP_PATH
+            # Look for common requirements file names in working_dir
+            for pip_filename in ["requirements.txt", "requirements.pip", "reqs.txt"]:
+                if os.path.isfile(os.path.join(working_dir, pip_filename)):
+                    return f"{UNZIP_PATH}/{pip_filename}"
 
-    logger.warning(f"Unsupported pip specification format: {type(pip_spec)}")
+    # Case 2: single file case - check if pip file is in files dict
+    if files:
+        # Look for requirements files in the files dict
+        for filename in files.keys():
+            if filename.endswith((".txt", ".pip")) and (
+                "requirements" in filename.lower() or "reqs" in filename.lower()
+            ):
+                return f"{MOUNT_PATH}/{filename}"
+
+    # Case 3: can't determine file path - fallback to packages
     return None
 
 
-def parse_requirements_file(requirements_path: str) -> Optional[List[str]]:
+def process_pip_dependencies(job: RayJob, pip_spec) -> Optional[List[str]]:
     """
-    Parse a requirements.txt file and return list of dependencies.
+    Process pip dependencies from runtime_env (already parsed by Ray).
+
+    Ray automatically validates and parses all pip specifications, so we only receive:
+    - Dict format: {"packages": [...], "pip_check": False} (from files or lists)
+    - List format: ["numpy", "pandas"] (direct list input)
 
     Args:
-        requirements_path: Path to requirements.txt file
+        pip_spec: Ray's processed pip specification (dict or list)
 
     Returns:
         List of pip dependencies
     """
-    if not os.path.isfile(requirements_path):
-        logger.warning(f"Requirements file not found: {requirements_path}")
-        return None
-
-    try:
-        with open(requirements_path, "r") as f:
-            lines = f.readlines()
-
-        # Parse requirements, filtering out comments and empty lines
-        requirements = []
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                requirements.append(line)
-
-        logger.info(f"Parsed {len(requirements)} dependencies from {requirements_path}")
-        return requirements
-
-    except (IOError, OSError) as e:
-        logger.warning(f"Could not read requirements file {requirements_path}: {e}")
+    if isinstance(pip_spec, dict) and "packages" in pip_spec:
+        # Standard Ray format: {"packages": [...], "pip_check": False}
+        packages = pip_spec["packages"]
+        logger.info(f"Using pip dependencies: {len(packages)} packages")
+        return packages
+    elif isinstance(pip_spec, list):
+        # Direct list input (rare, but possible)
+        logger.info(f"Using pip dependencies: {len(pip_spec)} packages")
+        return pip_spec
+    else:
+        # This should never happen since Ray validates inputs
+        logger.warning(f"Unexpected pip specification format: {type(pip_spec)}")
         return None
 
 

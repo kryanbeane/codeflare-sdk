@@ -1781,3 +1781,59 @@ def test_validate_simple_filename_without_working_dir_exists(auto_mock_setup, tm
         rayjob._validate_working_dir_entrypoint()
     finally:
         os.chdir(original_cwd)
+
+
+def test_rayjob_resolves_pip_path_in_working_dir(auto_mock_setup, tmp_path):
+    """
+    Test that pip paths are resolved relative to working_dir.
+    """
+    # Create working directory with requirements file
+    working_dir = tmp_path / "project"
+    working_dir.mkdir()
+    (working_dir / "requirements.txt").write_text("numpy==1.21.0\npandas>=1.3.0")
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python test.py",
+        cluster_name="test-cluster",
+        namespace="test-namespace",
+        runtime_env={
+            "working_dir": str(working_dir),
+            "pip": "requirements.txt",  # Should be resolved to working_dir/requirements.txt
+        },
+    )
+
+    # Should not raise error - pip path should be resolved
+    assert rayjob.runtime_env is not None
+    pip_spec = rayjob.runtime_env.to_dict()["pip"]
+    assert "packages" in pip_spec
+    assert "numpy==1.21.0" in pip_spec["packages"]
+    assert "pandas>=1.3.0" in pip_spec["packages"]
+
+
+def test_rayjob_pip_resolution_does_not_mutate_input(auto_mock_setup, tmp_path):
+    """
+    Test that pip path resolution doesn't mutate the original runtime_env dict.
+    """
+    # Create working directory with requirements file
+    working_dir = tmp_path / "project"
+    working_dir.mkdir()
+    (working_dir / "requirements.txt").write_text("numpy==1.21.0")
+
+    original_runtime_env = {"working_dir": str(working_dir), "pip": "requirements.txt"}
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python test.py",
+        cluster_name="test-cluster",
+        namespace="test-namespace",
+        runtime_env=original_runtime_env,
+    )
+
+    # Original dict should not be modified
+    assert original_runtime_env["pip"] == "requirements.txt"
+
+    # But RayJob should have resolved path
+    assert rayjob.runtime_env is not None
+    pip_spec = rayjob.runtime_env.to_dict()["pip"]
+    assert "packages" in pip_spec

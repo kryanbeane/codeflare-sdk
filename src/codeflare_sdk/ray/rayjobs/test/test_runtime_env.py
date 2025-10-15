@@ -784,61 +784,6 @@ def test_extract_single_entrypoint_file_no_match():
     assert result is None
 
 
-def test_parse_requirements_file_valid(tmp_path):
-    """
-    Test parse_requirements_file with valid requirements.txt.
-    """
-    from codeflare_sdk.ray.rayjobs.runtime_env import parse_requirements_file
-
-    # Create test requirements file
-    req_file = tmp_path / "requirements.txt"
-    req_file.write_text(
-        """# This is a comment
-numpy==1.21.0
-pandas>=1.3.0
-
-# Another comment
-scikit-learn
-"""
-    )
-
-    result = parse_requirements_file(str(req_file))
-
-    assert result is not None
-    assert len(result) == 3
-    assert "numpy==1.21.0" in result
-    assert "pandas>=1.3.0" in result
-    assert "scikit-learn" in result
-    # Comments and empty lines should be filtered out
-    assert "# This is a comment" not in result
-
-
-def test_parse_requirements_file_missing():
-    """
-    Test parse_requirements_file with non-existent file.
-    """
-    from codeflare_sdk.ray.rayjobs.runtime_env import parse_requirements_file
-
-    result = parse_requirements_file("/non/existent/requirements.txt")
-    assert result is None
-
-
-def test_parse_requirements_file_read_error(tmp_path):
-    """
-    Test parse_requirements_file with file read error.
-    """
-    from codeflare_sdk.ray.rayjobs.runtime_env import parse_requirements_file
-
-    # Create a file
-    req_file = tmp_path / "requirements.txt"
-    req_file.write_text("numpy==1.21.0")
-
-    # Mock open to raise IOError
-    with patch("builtins.open", side_effect=IOError("Permission denied")):
-        result = parse_requirements_file(str(req_file))
-        assert result is None
-
-
 def test_process_pip_dependencies_list():
     """
     Test process_pip_dependencies with list input.
@@ -858,15 +803,11 @@ def test_process_pip_dependencies_list():
     assert result == pip_list
 
 
-def test_process_pip_dependencies_requirements_file(tmp_path):
+def test_process_pip_dependencies_ray_dict_format():
     """
-    Test process_pip_dependencies with requirements.txt path.
+    Test process_pip_dependencies with Ray's standard dict format (from parsed files).
     """
     from codeflare_sdk.ray.rayjobs.runtime_env import process_pip_dependencies
-
-    # Create test requirements file
-    req_file = tmp_path / "requirements.txt"
-    req_file.write_text("numpy==1.21.0\npandas>=1.3.0")
 
     rayjob = RayJob(
         job_name="test-job",
@@ -875,7 +816,10 @@ def test_process_pip_dependencies_requirements_file(tmp_path):
         cluster_name="test-cluster",
     )
 
-    result = process_pip_dependencies(rayjob, str(req_file))
+    # This is what Ray produces when parsing requirements.txt files
+    ray_pip_spec = {"packages": ["numpy==1.21.0", "pandas>=1.3.0"], "pip_check": False}
+
+    result = process_pip_dependencies(rayjob, ray_pip_spec)
 
     assert result is not None
     assert len(result) == 2
@@ -883,9 +827,9 @@ def test_process_pip_dependencies_requirements_file(tmp_path):
     assert "pandas>=1.3.0" in result
 
 
-def test_process_pip_dependencies_dict_format():
+def test_process_pip_dependencies_dict_without_packages():
     """
-    Test process_pip_dependencies with dict format containing packages.
+    Test process_pip_dependencies with dict format that lacks packages key.
     """
     from codeflare_sdk.ray.rayjobs.runtime_env import process_pip_dependencies
 
@@ -896,10 +840,11 @@ def test_process_pip_dependencies_dict_format():
         cluster_name="test-cluster",
     )
 
-    pip_dict = {"packages": ["numpy", "pandas"], "pip_check": False}
+    # Dict without "packages" key should return None
+    pip_dict = {"pip_check": False, "other_field": "value"}
     result = process_pip_dependencies(rayjob, pip_dict)
 
-    assert result == ["numpy", "pandas"]
+    assert result is None
 
 
 def test_process_pip_dependencies_unsupported_format():
@@ -1059,3 +1004,60 @@ def test_create_file_secret_filters_metadata_keys(auto_mock_setup, tmp_path):
     secret_data = call_args[1]["body"].string_data  # Changed from data to string_data
     assert "test.py" in secret_data
     assert "__entrypoint_path__" not in secret_data
+
+
+def test_process_runtime_env_with_working_dir_pip_file(tmp_path):
+    """
+    Test that process_runtime_env preserves pip file paths for working_dir case.
+    """
+    from codeflare_sdk.ray.rayjobs.runtime_env import process_runtime_env, UNZIP_PATH
+
+    # Create working directory with requirements file
+    working_dir = tmp_path / "project"
+    working_dir.mkdir()
+    (working_dir / "requirements.txt").write_text("numpy==1.21.0\npandas>=1.3.0")
+
+    runtime_env = RuntimeEnv(
+        working_dir=str(working_dir), pip=str(working_dir / "requirements.txt")
+    )
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python test.py",
+        runtime_env=runtime_env,
+        namespace="test-namespace",
+        cluster_name="test-cluster",
+    )
+
+    result = process_runtime_env(rayjob)
+
+    assert result is not None
+    # Should reference pip file path in unzipped working_dir location
+    assert f"pip: {UNZIP_PATH}/requirements.txt" in result
+    assert f"working_dir: {UNZIP_PATH}" in result
+
+
+def test_process_runtime_env_fallback_to_packages(tmp_path):
+    """
+    Test that process_runtime_env falls back to packages when file path can't be determined.
+    """
+    from codeflare_sdk.ray.rayjobs.runtime_env import process_runtime_env
+
+    # Direct list input - should fallback to packages
+    runtime_env = RuntimeEnv(pip=["numpy==1.21.0", "pandas>=1.3.0"])
+
+    rayjob = RayJob(
+        job_name="test-job",
+        entrypoint="python test.py",
+        runtime_env=runtime_env,
+        namespace="test-namespace",
+        cluster_name="test-cluster",
+    )
+
+    result = process_runtime_env(rayjob)
+
+    assert result is not None
+    # Should have individual packages since no file path available
+    assert "pip:" in result
+    assert "- numpy==1.21.0" in result
+    assert "- pandas>=1.3.0" in result
