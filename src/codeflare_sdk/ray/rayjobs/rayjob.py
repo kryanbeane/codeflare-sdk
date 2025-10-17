@@ -22,7 +22,9 @@ import re
 import warnings
 from typing import Dict, Any, Optional, Tuple, Union
 
+from kubernetes import client
 from ray.runtime_env import RuntimeEnv
+from codeflare_sdk.common.kubernetes_cluster.auth import get_api_client
 from codeflare_sdk.common.kueue.kueue import get_default_kueue_name
 from codeflare_sdk.common.utils.constants import MOUNT_PATH
 
@@ -48,6 +50,36 @@ from . import pretty_print
 
 
 logger = logging.getLogger(__name__)
+
+
+class LogsOutput:
+    """
+    Wrapper for job logs that displays nicely in Jupyter notebooks.
+
+    This class allows logs to be automatically displayed in notebooks without
+    requiring print(), while still being usable as a string.
+    """
+
+    def __init__(self, logs: str):
+        self.logs = logs
+
+    def __str__(self) -> str:
+        """Return the raw logs string."""
+        return self.logs
+
+    def __repr__(self) -> str:
+        """Display logs in Python console."""
+        # For non-Jupyter environments, just return the string
+        return self.logs
+
+    def _repr_html_(self) -> str:
+        """Display logs as formatted HTML in Jupyter notebooks."""
+        # Jupyter will use this method for rich display
+        # Replace newlines with <br> and wrap in <pre> for monospace
+        import html
+
+        escaped_logs = html.escape(self.logs)
+        return f'<pre style="white-space: pre-wrap; word-wrap: break-word;">{escaped_logs}</pre>'
 
 
 class RayJob:
@@ -613,3 +645,96 @@ class RayJob:
         return status_mapping.get(
             deployment_status, (CodeflareRayJobStatus.UNKNOWN, False)
         )
+
+    def logs(self, strip_ansi: bool = True) -> LogsOutput:
+        """
+        Get the execution logs from the Ray job submitter pod.
+
+        In K8s job mode, Ray streams all job execution logs to the submitter pod,
+        so we can retrieve them directly from the Kubernetes pod logs.
+
+        The returned LogsOutput object displays nicely in Jupyter notebooks without
+        requiring print(). You can also convert it to a string with str(logs).
+
+        Args:
+            strip_ansi: Remove ANSI escape codes (colors) from logs for better readability (default: True)
+
+        Returns:
+            LogsOutput: The job execution logs wrapped in a display-friendly object
+
+        Example:
+            >>> job.logs()  # Automatically displays in Jupyter
+            >>> logs_str = str(job.logs())  # Convert to string
+        """
+        try:
+            # Get Kubernetes API client
+            api_instance = client.CoreV1Api(get_api_client())
+
+            # Find the submitter pod using label selector
+            # The submitter pod is a Kubernetes Job, so it has job-name label
+            label_selector = f"job-name={self.name}"
+
+            pods = api_instance.list_namespaced_pod(
+                namespace=self.namespace, label_selector=label_selector
+            )
+
+            if not pods.items:
+                return LogsOutput(
+                    f"Submitter pod for RayJob '{self.name}' not found. Job may not have started yet."
+                )
+
+            # Get the first pod (should only be one)
+            submitter_pod = pods.items[0]
+            pod_name = submitter_pod.metadata.name
+
+            # Check pod phase to provide helpful messages
+            pod_phase = submitter_pod.status.phase
+            if pod_phase == "Pending":
+                return LogsOutput(
+                    f"Submitter pod is pending. Job has not started execution yet."
+                )
+
+            # Get logs from the ray-job-submitter container
+            # The submitter pod has a container named 'ray-job-submitter'
+            try:
+                logs = api_instance.read_namespaced_pod_log(
+                    name=pod_name,
+                    namespace=self.namespace,
+                    container="ray-job-submitter",
+                )
+
+                # Strip ANSI escape codes for better readability
+                if strip_ansi and logs:
+                    logs = self._strip_ansi_codes(logs)
+
+                return LogsOutput(logs)
+            except client.ApiException as e:
+                if e.status == 400:
+                    # Container might not be ready yet
+                    return LogsOutput(f"Container not ready yet. Job is initializing.")
+                else:
+                    raise
+
+        except client.ApiException as e:
+            logger.error(f"Kubernetes API error while fetching logs: {e}")
+            return LogsOutput(f"Error fetching logs from Kubernetes: {e.reason}")
+        except Exception as e:
+            logger.error(f"Failed to retrieve logs for RayJob {self.name}: {e}")
+            return LogsOutput(f"Error retrieving logs: {str(e)}")
+
+    @staticmethod
+    def _strip_ansi_codes(text: str) -> str:
+        """
+        Remove ANSI escape sequences (color codes) from text.
+
+        Args:
+            text: Text potentially containing ANSI escape codes
+
+        Returns:
+            Text with ANSI codes removed
+        """
+        import re
+
+        # Pattern matches ANSI escape sequences
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        return ansi_escape.sub("", text)

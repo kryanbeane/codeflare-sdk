@@ -1781,3 +1781,218 @@ def test_validate_simple_filename_without_working_dir_exists(auto_mock_setup, tm
         rayjob._validate_working_dir_entrypoint()
     finally:
         os.chdir(original_cwd)
+
+
+def test_rayjob_logs_success(auto_mock_setup, mocker):
+    """Test successful log retrieval from submitter pod."""
+    # Mock Kubernetes API
+    mock_k8s_api = mocker.patch("kubernetes.client.CoreV1Api")
+    mock_api_instance = mocker.MagicMock()
+    mock_k8s_api.return_value = mock_api_instance
+
+    # Mock get_api_client (patched at the import location)
+    mocker.patch(
+        "codeflare_sdk.common.kubernetes_cluster.auth.get_api_client",
+        return_value=mocker.MagicMock(),
+    )
+
+    # Mock pod list response
+    mock_pod = mocker.MagicMock()
+    mock_pod.metadata.name = "test-job-submitter-abc123"
+    mock_pod.status.phase = "Running"
+
+    mock_pod_list = mocker.MagicMock()
+    mock_pod_list.items = [mock_pod]
+    mock_api_instance.list_namespaced_pod.return_value = mock_pod_list
+
+    # Mock pod logs
+    expected_logs = (
+        "Job started\nProcessing data...\nJob completed successfully\nResult: 42"
+    )
+    mock_api_instance.read_namespaced_pod_log.return_value = expected_logs
+
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_name="test-cluster",
+        entrypoint="python test.py",
+        namespace="test-namespace",
+    )
+
+    logs_output = rayjob.logs()
+
+    # Verify it returns LogsOutput wrapper
+    from codeflare_sdk.ray.rayjobs.rayjob import LogsOutput
+
+    assert isinstance(logs_output, LogsOutput)
+
+    # Verify the wrapped logs content
+    assert str(logs_output) == expected_logs
+
+    mock_api_instance.list_namespaced_pod.assert_called_once_with(
+        namespace="test-namespace", label_selector="job-name=test-job"
+    )
+    mock_api_instance.read_namespaced_pod_log.assert_called_once_with(
+        name="test-job-submitter-abc123",
+        namespace="test-namespace",
+        container="ray-job-submitter",
+    )
+
+
+def test_rayjob_logs_no_pod_found(auto_mock_setup, mocker):
+    """Test logs when submitter pod not found."""
+    # Mock Kubernetes API
+    mock_k8s_api = mocker.patch("kubernetes.client.CoreV1Api")
+    mock_api_instance = mocker.MagicMock()
+    mock_k8s_api.return_value = mock_api_instance
+
+    mocker.patch(
+        "codeflare_sdk.common.kubernetes_cluster.auth.get_api_client",
+        return_value=mocker.MagicMock(),
+    )
+
+    # Mock empty pod list
+    mock_pod_list = mocker.MagicMock()
+    mock_pod_list.items = []
+    mock_api_instance.list_namespaced_pod.return_value = mock_pod_list
+
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_name="test-cluster",
+        entrypoint="python test.py",
+        namespace="test-namespace",
+    )
+
+    logs_output = rayjob.logs()
+    assert "not found" in str(logs_output).lower()
+
+
+def test_rayjob_logs_pod_pending(auto_mock_setup, mocker):
+    """Test logs when submitter pod is pending."""
+    # Mock Kubernetes API
+    mock_k8s_api = mocker.patch("kubernetes.client.CoreV1Api")
+    mock_api_instance = mocker.MagicMock()
+    mock_k8s_api.return_value = mock_api_instance
+
+    mocker.patch(
+        "codeflare_sdk.common.kubernetes_cluster.auth.get_api_client",
+        return_value=mocker.MagicMock(),
+    )
+
+    # Mock pending pod
+    mock_pod = mocker.MagicMock()
+    mock_pod.metadata.name = "test-job-submitter-xyz"
+    mock_pod.status.phase = "Pending"
+
+    mock_pod_list = mocker.MagicMock()
+    mock_pod_list.items = [mock_pod]
+    mock_api_instance.list_namespaced_pod.return_value = mock_pod_list
+
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_name="test-cluster",
+        entrypoint="python test.py",
+        namespace="test-namespace",
+    )
+
+    logs_output = rayjob.logs()
+    assert "pending" in str(logs_output).lower()
+
+
+def test_rayjob_logs_container_not_ready(auto_mock_setup, mocker):
+    """Test logs when container is not ready yet."""
+    # Mock Kubernetes API
+    mock_k8s_api = mocker.patch("kubernetes.client.CoreV1Api")
+    mock_api_instance = mocker.MagicMock()
+    mock_k8s_api.return_value = mock_api_instance
+
+    mocker.patch(
+        "codeflare_sdk.common.kubernetes_cluster.auth.get_api_client",
+        return_value=mocker.MagicMock(),
+    )
+
+    # Mock running pod
+    mock_pod = mocker.MagicMock()
+    mock_pod.metadata.name = "test-job-submitter-xyz"
+    mock_pod.status.phase = "Running"
+
+    mock_pod_list = mocker.MagicMock()
+    mock_pod_list.items = [mock_pod]
+    mock_api_instance.list_namespaced_pod.return_value = mock_pod_list
+
+    # Mock 400 error (container not ready)
+    from kubernetes.client import ApiException
+
+    mock_api_instance.read_namespaced_pod_log.side_effect = ApiException(status=400)
+
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_name="test-cluster",
+        entrypoint="python test.py",
+        namespace="test-namespace",
+    )
+
+    logs_output = rayjob.logs()
+    assert "not ready yet" in str(logs_output).lower()
+
+
+def test_logs_output_wrapper():
+    """Test the LogsOutput wrapper class formatting."""
+    from codeflare_sdk.ray.rayjobs.rayjob import LogsOutput
+
+    test_logs = "Line 1\nLine 2\nLine 3"
+    logs_output = LogsOutput(test_logs)
+
+    # Test str() conversion
+    assert str(logs_output) == test_logs
+
+    # Test HTML representation for Jupyter
+    html_output = logs_output._repr_html_()
+    assert "<pre" in html_output
+    assert "Line 1" in html_output
+    assert "Line 2" in html_output
+
+
+def test_logs_output_ansi_stripping(auto_mock_setup, mocker):
+    """Test that ANSI codes are stripped by default."""
+    # Mock Kubernetes API
+    mock_k8s_api = mocker.patch("kubernetes.client.CoreV1Api")
+    mock_api_instance = mocker.MagicMock()
+    mock_k8s_api.return_value = mock_api_instance
+
+    mocker.patch(
+        "codeflare_sdk.common.kubernetes_cluster.auth.get_api_client",
+        return_value=mocker.MagicMock(),
+    )
+
+    # Mock pod list response
+    mock_pod = mocker.MagicMock()
+    mock_pod.metadata.name = "test-job-submitter-abc123"
+    mock_pod.status.phase = "Running"
+
+    mock_pod_list = mocker.MagicMock()
+    mock_pod_list.items = [mock_pod]
+    mock_api_instance.list_namespaced_pod.return_value = mock_pod_list
+
+    # Mock pod logs with ANSI codes
+    logs_with_ansi = "\x1b[32mGreen text\x1b[0m\nNormal text\n\x1b[1mBold text\x1b[22m"
+    mock_api_instance.read_namespaced_pod_log.return_value = logs_with_ansi
+
+    rayjob = RayJob(
+        job_name="test-job",
+        cluster_name="test-cluster",
+        entrypoint="python test.py",
+        namespace="test-namespace",
+    )
+
+    # Test with strip_ansi=True (default)
+    logs_output = rayjob.logs(strip_ansi=True)
+    logs_str = str(logs_output)
+    assert "\x1b[" not in logs_str  # ANSI codes should be removed
+    assert "Green text" in logs_str
+    assert "Normal text" in logs_str
+    assert "Bold text" in logs_str
+
+    # Test with strip_ansi=False
+    logs_output_raw = rayjob.logs(strip_ansi=False)
+    logs_str_raw = str(logs_output_raw)
+    assert "\x1b[" in logs_str_raw  # ANSI codes should be preserved
