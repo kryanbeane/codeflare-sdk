@@ -101,6 +101,7 @@ class RayJob:
         ttl_seconds_after_finished: int = 0,
         active_deadline_seconds: Optional[int] = None,
         local_queue: Optional[str] = None,
+        priority_class: Optional[str] = None,
     ):
         """
         Initialize a RayJob instance.
@@ -118,7 +119,9 @@ class RayJob:
             ttl_seconds_after_finished: Seconds to wait before cleanup after job finishes (default: 0)
             active_deadline_seconds: Maximum time the job can run before being terminated (optional)
             local_queue: The Kueue LocalQueue to submit the job to (optional)
-
+            priority_class: The Kueue priority class name for workload priority and preemption.
+                Higher priority workloads can preempt lower priority ones when resources are constrained.
+                Must reference a WorkloadPriorityClass resource in your cluster. (optional)
         Note:
             - True if cluster_config is provided (new cluster will be cleaned up)
             - False if cluster_name is provided (existing cluster will not be shut down)
@@ -156,6 +159,7 @@ class RayJob:
         self.ttl_seconds_after_finished = ttl_seconds_after_finished
         self.active_deadline_seconds = active_deadline_seconds
         self.local_queue = local_queue
+        self.priority_class = priority_class
 
         if namespace is None:
             detected_namespace = get_current_namespace()
@@ -293,6 +297,11 @@ class RayJob:
                         f"does not exist, the RayJob submission will fail. "
                         f"To fix this, please explicitly specify the 'local_queue' parameter."
                     )
+
+        # Add Kueue priority label if specified (enables preemption)
+        if self.priority_class:
+            labels["kueue.x-k8s.io/priority-class"] = self.priority_class
+            logger.info(f"Setting Kueue priority label: {self.priority_class}")
 
         rayjob_cr["metadata"]["labels"] = labels
 
