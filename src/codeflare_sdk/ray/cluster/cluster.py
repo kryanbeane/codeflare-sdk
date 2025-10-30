@@ -19,7 +19,7 @@ cluster setup queue, a list of all existing clusters, and the user's working nam
 """
 
 from time import sleep
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Any
 import copy
 
 from ray.job_submission import JobSubmissionClient, JobStatus
@@ -838,9 +838,16 @@ def _create_resources(yamls, namespace: str, api_instance: client.CustomObjectsA
     )
 
 
-def _apply_ray_cluster(
-    yamls, namespace: str, api_instance: client.CustomObjectsApi, force=False
-):
+def _apply_ray_cluster(yamls, namespace: str, api_instance: Any, force=False):
+    """
+    Applies a RayCluster resource using server-side apply.
+
+    Args:
+        yamls: The RayCluster resource definition (dict or YAML string)
+        namespace: The Kubernetes namespace to apply to
+        api_instance: A DynamicClient resource object (not CustomObjectsApi) that has server_side_apply method
+        force: Whether to force apply in case of conflicts
+    """
     api_instance.server_side_apply(
         field_manager=CF_SDK_FIELD_MANAGER,
         group="ray.io",
@@ -1223,3 +1230,343 @@ def _get_dashboard_url_from_httproute(
     except Exception as e:  # pragma: no cover
         # If any error occurs, return None to fall back to OpenShift Route
         return None
+
+
+def _process_ray_cluster_yaml(ray_cluster_yaml: dict) -> dict:
+    """
+    Processes a RayCluster YAML to remove TLS/OAuth-related components.
+
+    This function removes hardcoded components that are typically added by RHOAI
+    for security and OAuth proxy support:
+    - TLS-related environment variables (RAY_USE_TLS, RAY_TLS_*)
+    - TLS-related volume mounts (ca-vol, server-cert workspace mounts)
+    - OAuth proxy sidecar container
+    - Certificate generation initContainers
+    - TLS/OAuth related volumes
+    - Service account configuration
+
+    This processing is applied to both head and worker pod specs.
+
+    Args:
+        ray_cluster_yaml (dict): The RayCluster YAML dictionary from Kubernetes API
+
+    Returns:
+        dict: The processed YAML with TLS/OAuth components removed
+    """
+    # Environment variable names to remove (TLS/OAuth related)
+    tls_env_vars = {
+        "RAY_USE_TLS",
+        "RAY_TLS_SERVER_CERT",
+        "RAY_TLS_SERVER_KEY",
+        "RAY_TLS_CA_CERT",
+    }
+
+    # Volume names to remove
+    volumes_to_remove = {"ca-vol", "proxy-tls-secret"}
+
+    # Volume mount names to remove from containers
+    volume_mounts_to_remove = {"ca-vol", "server-cert"}
+
+    # Container names to remove (sidecar containers)
+    containers_to_remove = {"oauth-proxy"}
+
+    def process_container_spec(container_spec):
+        """Process a single container spec to remove TLS/OAuth env vars and mounts."""
+        if "env" in container_spec:
+            # Filter out TLS-related environment variables
+            container_spec["env"] = [
+                env_var
+                for env_var in container_spec["env"]
+                if env_var.get("name") not in tls_env_vars
+            ]
+            # Remove env key if empty
+            if not container_spec["env"]:
+                del container_spec["env"]
+
+        if "volumeMounts" in container_spec:
+            # Filter out TLS/OAuth related volume mounts
+            container_spec["volumeMounts"] = [
+                mount
+                for mount in container_spec["volumeMounts"]
+                if mount.get("name") not in volume_mounts_to_remove
+            ]
+            # Remove volumeMounts key if empty
+            if not container_spec["volumeMounts"]:
+                del container_spec["volumeMounts"]
+
+    def process_pod_spec(pod_spec):
+        """Process a pod spec (in template.spec) to clean up TLS/OAuth components."""
+        # Process containers
+        if "containers" in pod_spec:
+            # Remove sidecar containers like oauth-proxy
+            pod_spec["containers"] = [
+                container
+                for container in pod_spec["containers"]
+                if container.get("name") not in containers_to_remove
+            ]
+            # Process remaining containers to remove TLS env/mounts
+            for container in pod_spec["containers"]:
+                process_container_spec(container)
+
+        # Remove entire initContainers section
+        if "initContainers" in pod_spec:
+            del pod_spec["initContainers"]
+
+        # Remove serviceAccountName field
+        if "serviceAccountName" in pod_spec:
+            del pod_spec["serviceAccountName"]
+
+        # Process volumes
+        if "volumes" in pod_spec:
+            # Filter out TLS/OAuth related volumes
+            pod_spec["volumes"] = [
+                volume
+                for volume in pod_spec["volumes"]
+                if volume.get("name") not in volumes_to_remove
+            ]
+
+    # Process headGroupSpec
+    if "spec" in ray_cluster_yaml and "headGroupSpec" in ray_cluster_yaml["spec"]:
+        head_spec = ray_cluster_yaml["spec"]["headGroupSpec"]
+        if "template" in head_spec and "spec" in head_spec["template"]:
+            process_pod_spec(head_spec["template"]["spec"])
+
+    # Process workerGroupSpecs
+    if "spec" in ray_cluster_yaml and "workerGroupSpecs" in ray_cluster_yaml["spec"]:
+        for worker_spec in ray_cluster_yaml["spec"]["workerGroupSpecs"]:
+            if "template" in worker_spec and "spec" in worker_spec["template"]:
+                process_pod_spec(worker_spec["template"]["spec"])
+
+    return ray_cluster_yaml
+
+
+def export_ray_clusters(output_dir: str) -> List[str]:
+    """
+    Exports all RayClusters from all namespaces in the cluster to YAML files.
+
+    This function:
+    - Lists all namespaces in the Kubernetes cluster
+    - Queries each namespace for RayClusters
+    - Removes auto-generated Kubernetes fields from each YAML
+    - Removes TLS/OAuth-related components (hardcoded processing):
+      * TLS environment variables and volume mounts
+      * OAuth proxy sidecar containers
+      * Certificate generation init containers
+      * Related volumes and service account configuration
+    - Saves each RayCluster to a separate YAML file in the specified output directory
+
+    Args:
+        output_dir (str): Directory path where YAML files will be saved.
+                         Directory will be created if it doesn't exist.
+
+    Returns:
+        List[str]: List of file paths where RayCluster YAMLs were saved.
+
+    Raises:
+        RuntimeError: If unable to connect to Kubernetes cluster or access its API.
+    """
+    try:
+        config_check()
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to Kubernetes cluster: {e}")
+
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"Created output directory: {output_dir}")
+
+    saved_files = []
+    api_instance = client.CustomObjectsApi(get_api_client())
+    core_api = client.CoreV1Api(get_api_client())
+
+    try:
+        # Get list of all namespaces
+        namespaces = core_api.list_namespace()
+        namespace_names = [ns.metadata.name for ns in namespaces.items]
+    except Exception as e:
+        print(f"Error listing namespaces: {e}")
+        return saved_files
+
+    # Query each namespace for RayClusters
+    for namespace in namespace_names:
+        try:
+            rcs = api_instance.list_namespaced_custom_object(
+                group="ray.io",
+                version="v1",
+                namespace=namespace,
+                plural="rayclusters",
+            )
+        except Exception as e:
+            print(
+                f"Warning: Could not list RayClusters in namespace '{namespace}': {e}"
+            )
+            continue
+
+        # Process each RayCluster
+        for rc in rcs.get("items", []):
+            try:
+                # Make a copy to avoid modifying the original
+                rc_copy = copy.deepcopy(rc)
+
+                # Remove auto-generated fields
+                remove_autogenerated_fields(rc_copy)
+
+                # Apply hardcoded processing to remove TLS/OAuth components
+                rc_copy = _process_ray_cluster_yaml(rc_copy)
+
+                # Generate output filename
+                cluster_name = rc_copy["metadata"]["name"]
+                ns = rc_copy["metadata"]["namespace"]
+                output_filename = os.path.join(
+                    output_dir, f"raycluster-{cluster_name}-{ns}.yaml"
+                )
+
+                # Write to file
+                with open(output_filename, "w") as outfile:
+                    yaml.dump(rc_copy, outfile, default_flow_style=False)
+
+                saved_files.append(output_filename)
+                print(
+                    f"Exported RayCluster '{cluster_name}' from namespace '{ns}' to {output_filename}"
+                )
+
+            except Exception as e:
+                cluster_name = rc.get("metadata", {}).get("name", "unknown")
+                print(f"Error processing RayCluster '{cluster_name}': {e}")
+                continue
+
+    print(f"\nSuccessfully exported {len(saved_files)} RayCluster(s)")
+    return saved_files
+
+
+def import_ray_clusters(source_path: str, force: bool = False) -> List[Dict]:
+    """
+    Imports RayClusters from YAML files and applies them to the cluster.
+
+    This function:
+    - Accepts either a directory path or a single file path
+    - If directory: loads all .yaml files from it
+    - If file: loads the single YAML file
+    - For each YAML file, loads RayCluster resource(s) and applies them
+    - Preserves the original namespace specified in each YAML's metadata
+
+    Args:
+        source_path (str): Path to a YAML file or directory containing YAML files.
+        force (bool, optional): Whether to force apply in case of conflicts. Default is False.
+
+    Returns:
+        List[Dict]: List of result dictionaries for each import attempt.
+                   Each dict contains: {
+                       'cluster_name': str,
+                       'namespace': str,
+                       'file': str,
+                       'status': 'success' or 'error',
+                       'message': str
+                   }
+
+    Raises:
+        ValueError: If source_path does not exist or is neither file nor directory.
+    """
+    if not os.path.exists(source_path):
+        raise ValueError(f"Source path does not exist: {source_path}")
+
+    try:
+        config_check()
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to Kubernetes cluster: {e}")
+
+    results = []
+    files_to_process = []
+
+    # Determine if source is file or directory
+    if os.path.isfile(source_path):
+        if source_path.endswith(".yaml") or source_path.endswith(".yml"):
+            files_to_process.append(source_path)
+        else:
+            raise ValueError(f"File is not a YAML file: {source_path}")
+    elif os.path.isdir(source_path):
+        # Find all YAML files in directory
+        for filename in os.listdir(source_path):
+            if filename.endswith(".yaml") or filename.endswith(".yml"):
+                files_to_process.append(os.path.join(source_path, filename))
+    else:
+        raise ValueError(f"Source path is neither file nor directory: {source_path}")
+
+    if not files_to_process:
+        print("No YAML files found to import")
+        return results
+
+    # Use DynamicClient to get RayCluster resource (same pattern as Cluster.apply())
+    # DynamicClient resources have the server_side_apply method needed by _apply_ray_cluster
+    try:
+        crds = DynamicClient(get_api_client()).resources
+        api_instance = crds.get(api_version="ray.io/v1", kind="RayCluster")
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize DynamicClient for RayCluster: {e}")
+
+    # Process each YAML file
+    for yaml_file in files_to_process:
+        try:
+            with open(yaml_file, "r") as f:
+                yaml_documents = yaml.safe_load_all(f)
+
+                for doc_idx, doc in enumerate(yaml_documents):
+                    if doc is None:
+                        continue
+
+                    try:
+                        # Extract cluster information
+                        cluster_name = doc.get("metadata", {}).get("name", "unknown")
+                        namespace = doc.get("metadata", {}).get("namespace", "default")
+
+                        # Verify this is a RayCluster
+                        kind = doc.get("kind", "")
+                        if kind != "RayCluster":
+                            print(
+                                f"Skipping non-RayCluster resource '{cluster_name}' of kind '{kind}' in {yaml_file}"
+                            )
+                            continue
+
+                        # Apply the RayCluster
+                        _apply_ray_cluster(doc, namespace, api_instance, force=force)
+
+                        result = {
+                            "cluster_name": cluster_name,
+                            "namespace": namespace,
+                            "file": yaml_file,
+                            "status": "success",
+                            "message": f"Successfully applied RayCluster '{cluster_name}' to namespace '{namespace}'",
+                        }
+                        results.append(result)
+                        print(result["message"])
+
+                    except Exception as e:
+                        cluster_name = doc.get("metadata", {}).get("name", "unknown")
+                        namespace = doc.get("metadata", {}).get("namespace", "default")
+                        result = {
+                            "cluster_name": cluster_name,
+                            "namespace": namespace,
+                            "file": yaml_file,
+                            "status": "error",
+                            "message": f"Error applying RayCluster '{cluster_name}': {str(e)}",
+                        }
+                        results.append(result)
+                        print(result["message"])
+
+        except Exception as e:
+            result = {
+                "cluster_name": "unknown",
+                "namespace": "unknown",
+                "file": yaml_file,
+                "status": "error",
+                "message": f"Error reading YAML file '{yaml_file}': {str(e)}",
+            }
+            results.append(result)
+            print(result["message"])
+
+    # Print summary
+    success_count = sum(1 for r in results if r["status"] == "success")
+    error_count = sum(1 for r in results if r["status"] == "error")
+    print(f"\nImport Summary: {success_count} succeeded, {error_count} failed")
+
+    return results

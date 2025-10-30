@@ -12,6 +12,8 @@ from .ray import (
     RayJobClient,
     RayJob,
     ManagedClusterConfig,
+    export_ray_clusters,
+    import_ray_clusters,
 )
 
 from .common.widgets import view_clusters

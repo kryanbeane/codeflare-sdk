@@ -10,4 +10,6 @@ from .cluster import (
     get_cluster,
     list_all_queued,
     list_all_clusters,
+    export_ray_clusters,
+    import_ray_clusters,
 )

@@ -21,4 +21,6 @@ from .cluster import (
     RayClusterStatus,
     CodeFlareClusterStatus,
     RayCluster,
+    export_ray_clusters,
+    import_ray_clusters,
 )
