@@ -1,0 +1,108 @@
+# FILENAME: kueue-clusterqueues.yaml
+#
+# Cohort and ClusterQueue configurations for the Kueue demo.
+#
+# This file defines:
+# 1. A Cohort resource that enables resource sharing between ClusterQueues
+# 2. Two ClusterQueues that join the cohort for borrowing and preemption
+#
+# Key behavior:
+# - cq-prod has quota for 2 workloads (1 long-lived + 1 additional)
+# - cq-research has quota for 1 workload (1 long-lived)
+# - Both CQs are in "main-cohort" to enable borrowing and reclaiming
+# - Low-priority job in cq-research can borrow from cq-prod's idle capacity
+# - High-priority job in cq-prod can reclaim borrowed capacity via preemption
+#
+# Per workload requirements:
+# - 0.75 CPU requests (500m head + 250m worker)
+# - 10Gi memory requests (6Gi head + 4Gi worker)
+#
+---
+# Create the Cohort resource explicitly
+apiVersion: kueue.x-k8s.io/v1alpha1
+kind: Cohort
+metadata:
+  name: main-cohort
+# No spec needed - cohort is defined by ClusterQueues that reference it
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: cq-research
+spec:
+  # Allow workloads from any namespace (via LocalQueues)
+  namespaceSelector: {}
+
+  # Join cohort to enable cross-CQ borrowing and reclaiming
+  cohort: main-cohort
+
+  # Preemption settings:
+  # - Allow preemption of lower-priority workloads for cross-CQ borrowing
+  # - Protects research-team-cluster (default-priority=100) from low-priority preemption
+  preemption:
+    withinClusterQueue: LowerPriority  # Allow preempting lower-priority workloads
+    reclaimWithinCohort: LowerPriority
+    borrowWithinCohort:
+      policy: LowerPriority
+
+  # Define resource quotas for team-research
+  # Minimal quota - forces low-priority job to borrow from cq-prod
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: cpu-flavor
+          resources:
+            # Nominal quota: 750m CPU (ONLY research-team-cluster)
+            # Forces additional jobs to borrow from cohort
+            - name: cpu
+              nominalQuota: "750m"
+            # Memory quota: 10Gi (ONLY research-team-cluster)
+            - name: memory
+              nominalQuota: "10Gi"
+    # GPU resource group - currently no GPU nodes available
+    # Uncomment when GPU nodes are configured:
+    # - coveredResources: ["nvidia.com/gpu"]
+    #   flavors:
+    #     - name: gpu-flavor
+    #       resources:
+    #         - name: nvidia.com/gpu
+    #           nominalQuota: "3"
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: cq-prod
+spec:
+  # Allow workloads from any namespace (via LocalQueues)
+  namespaceSelector: {}
+
+  # Join cohort to enable cross-CQ borrowing and reclaiming
+  cohort: main-cohort
+
+  # Preemption settings:
+  # - Allow preemption of lower-priority workloads (enables cross-CQ preemption)
+  # - Protects prod-team-cluster (default-priority=100) from low-priority preemption
+  preemption:
+    withinClusterQueue: LowerPriority  # Allow preempting lower-priority workloads
+    reclaimWithinCohort: LowerPriority
+    borrowWithinCohort:
+      policy: LowerPriority
+
+  # Define resource quotas for team-prod
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: cpu-flavor
+          resources:
+            - name: cpu
+              nominalQuota: "1500m"
+            - name: memory
+              nominalQuota: "20Gi"
+    # GPU resource group - currently no GPU nodes available
+    # Uncomment when GPU nodes are configured:
+    # - coveredResources: ["nvidia.com/gpu"]
+    #   flavors:
+    #     - name: gpu-flavor
+    #       resources:
+    #         - name: nvidia.com/gpu
+    #           nominalQuota: "0"

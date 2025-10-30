@@ -1,0 +1,34 @@
+# FILENAME: kueue-priorities.yaml
+#
+# WorkloadPriorityClass definitions for the Kueue demo.
+# These priority classes demonstrate a three-tier preemption hierarchy.
+#
+# - low-priority (10): Used by team-research jobs that can be preempted
+# - default-priority (100): Used by team-prod jobs that can reclaim resources
+# - high-priority (1000): Used for critical/urgent jobs that can preempt everything
+#
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: WorkloadPriorityClass
+metadata:
+  name: low-priority
+# Lower value = lower priority, more likely to be preempted
+value: 10
+description: "Low priority workloads that can be preempted by higher priority jobs"
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: WorkloadPriorityClass
+metadata:
+  name: default-priority
+# Higher value = higher priority, can preempt lower priority jobs
+value: 100
+description: "Default priority for production workloads"
+# This is the default priority class when none is specified
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: WorkloadPriorityClass
+metadata:
+  name: high-priority
+# Highest value = highest priority, can preempt all lower priority jobs
+value: 1000
+description: "High priority for critical/urgent workloads that can preempt production jobs"

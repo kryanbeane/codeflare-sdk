@@ -409,6 +409,11 @@ class RayJob:
                         "name": "ray-job-submitter",
                         "image": image,
                         "volumeMounts": volume_mounts,
+                        # Add minimal resource requests for Kueue quota calculation
+                        "resources": {
+                            "requests": {"cpu": "100m", "memory": "512Mi"},
+                            "limits": {"cpu": "500m", "memory": "1Gi"},
+                        },
                     }
                 ],
                 "volumes": [

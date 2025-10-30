@@ -1,0 +1,48 @@
+# FILENAME: kueue-team-setup.yaml
+#
+# Namespace and LocalQueue setup for the two teams.
+#
+# This file creates:
+# 1. Namespaces for each team (team-research and team-prod)
+# 2. LocalQueues that connect each team's namespace to their ClusterQueue
+#
+# Teams submit workloads to their LocalQueue, which maps to their ClusterQueue.
+#
+---
+# Namespace for the research team
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-research
+  labels:
+    team: research
+---
+# LocalQueue for team-research
+# Workloads in team-research namespace use this queue to access cq-research
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: lq-research
+  namespace: team-research
+spec:
+  # Connect this LocalQueue to the research ClusterQueue
+  clusterQueue: cq-research
+---
+# Namespace for the production team
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-prod
+  labels:
+    team: prod
+---
+# LocalQueue for team-prod
+# Workloads in team-prod namespace use this queue to access cq-prod
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: lq-prod
+  namespace: team-prod
+spec:
+  # Connect this LocalQueue to the production ClusterQueue
+  clusterQueue: cq-prod

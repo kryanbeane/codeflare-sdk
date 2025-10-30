@@ -1,0 +1,25 @@
+# FILENAME: kueue-flavors.yaml
+#
+# ResourceFlavor definitions for the Kueue demo.
+# ResourceFlavors represent different types of resources available in the cluster.
+#
+# - cpu-flavor: For CPU-based workloads (our demo uses CPU-only workloads)
+# - gpu-flavor: Placeholder for GPU resources (quota set to 0 in this demo)
+#
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: cpu-flavor
+spec:
+  # This flavor represents standard CPU resources
+  # No node selectors or tolerations needed for this basic demo
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: gpu-flavor
+spec:
+  # This flavor represents GPU resources
+  # Included to show complete admin setup, even though GPU quota is 0
+  # In a real environment, this would have node selectors for GPU nodes

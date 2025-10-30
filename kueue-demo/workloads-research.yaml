@@ -1,0 +1,84 @@
+# FILENAME: workloads-research.yaml
+#
+# Low-priority research job.
+#
+# This job will run alongside the 2 long-lived clusters (filling the 3rd slot).
+# When a high-priority job is submitted, this low-priority job will be preempted.
+#
+# Resource requirements (CPU-only):
+# - Head: 500m CPU, 6Gi memory
+# - Worker (1 replica): 250m CPU, 4Gi memory
+# - Total: 0.75 CPU, 10Gi memory
+#
+---
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: research-low-priority-job
+  namespace: team-research
+  labels:
+    # Kueue label: which LocalQueue to submit to
+    kueue.x-k8s.io/queue-name: "lq-research"
+    # Kueue label: priority class for this workload
+    kueue.x-k8s.io/priority-class: "low-priority"
+spec:
+  # The Python script to run
+  entrypoint: python -c "import time; print('Low-priority research job started'); time.sleep(600); print('Low-priority job finished')"
+
+  # Shut down the Ray cluster after the job finishes
+  shutdownAfterJobFinishes: true
+
+  # Clean up the RayJob CR after 600 seconds
+  ttlSecondsAfterFinished: 600
+
+  # Ray cluster specification embedded in the RayJob
+  rayClusterSpec:
+    # Ray version to use
+    rayVersion: '2.47.1'
+
+    # Head node configuration
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: '0.0.0.0'
+        block: 'true'
+      template:
+        spec:
+          containers:
+            - name: ray-head
+              image: quay.io/project-codeflare/ray:latest-py39-cu118
+              # Resource requests: 500m CPU for head node
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "6Gi"
+                limits:
+                  cpu: "500m"
+                  memory: "8Gi"
+              env:
+                - name: RAY_USAGE_STATS_ENABLED
+                  value: "0"
+
+    # Worker node configuration - CPU only
+    workerGroupSpecs:
+      - groupName: worker-group
+        replicas: 1
+        minReplicas: 1
+        maxReplicas: 1
+        rayStartParams:
+          block: 'true'
+        template:
+          spec:
+            containers:
+              - name: ray-worker
+                image: quay.io/project-codeflare/ray:latest-py39-cu118
+                # Resource requests: 250m CPU per worker
+                resources:
+                  requests:
+                    cpu: "250m"
+                    memory: "4Gi"
+                  limits:
+                    cpu: "1"
+                    memory: "6Gi"
+                env:
+                  - name: RAY_USAGE_STATS_ENABLED
+                    value: "0"

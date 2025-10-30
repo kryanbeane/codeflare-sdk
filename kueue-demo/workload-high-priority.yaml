@@ -1,0 +1,88 @@
+# FILENAME: workload-high-priority.yaml
+#
+# High-priority critical job for team-prod.
+#
+# This RayJob has high-priority (value: 1000) and is submitted to cq-prod.
+# Since cq-prod quota is full (1 long-lived cluster), this job will:
+# 1. Borrow resources from the cohort
+# 2. Reclaim/preempt the low-priority job in cq-research
+#
+# Resource requirements (CPU-only):
+# - Head: 500m CPU, 6Gi memory
+# - Worker (1 replica): 250m CPU, 4Gi memory
+# - Total: 0.75 CPU, 10Gi memory
+#
+---
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: prod-critical-job
+  namespace: team-prod
+  labels:
+    # Kueue label: which LocalQueue to submit to
+    kueue.x-k8s.io/queue-name: "lq-prod"
+    # Kueue label: priority class for this workload (HIGHEST priority)
+    kueue.x-k8s.io/priority-class: "high-priority"
+spec:
+  # The Python script to run
+  # This high-priority job will borrow from cohort and PREEMPT the low-priority job in cq-research
+  entrypoint: python -c "import ray, time; ray.init(); print('CRITICAL prod high-priority job started - preempted low-priority research job'); time.sleep(30); print('CRITICAL job finished!'); ray.shutdown()"
+
+  # Shut down the Ray cluster after the job finishes
+  shutdownAfterJobFinishes: true
+
+  # Clean up the RayJob CR after 600 seconds
+  ttlSecondsAfterFinished: 600
+
+  # Ray cluster specification embedded in the RayJob
+  rayClusterSpec:
+    # Ray version to use
+    rayVersion: '2.47.1'
+
+    # Head node configuration
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: '0.0.0.0'
+        block: 'true'
+      template:
+        spec:
+          containers:
+            - name: ray-head
+              image: quay.io/project-codeflare/ray:latest-py39-cu118
+              # Resource requests: 500m CPU for head node
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "6Gi"
+                limits:
+                  cpu: "500m"
+                  memory: "8Gi"
+              env:
+                - name: RAY_USAGE_STATS_ENABLED
+                  value: "0"
+
+    # Worker node configuration - CPU only
+    workerGroupSpecs:
+      - groupName: worker-group
+        replicas: 1
+        minReplicas: 1
+        maxReplicas: 1
+        rayStartParams:
+          block: 'true'
+        template:
+          spec:
+            containers:
+              - name: ray-worker
+                image: quay.io/project-codeflare/ray:latest-py39-cu118
+                # Resource requests: 250m CPU per worker
+                # Will borrow from cohort and preempt low-priority job
+                resources:
+                  requests:
+                    cpu: "250m"
+                    memory: "4Gi"
+                  limits:
+                    cpu: "1"
+                    memory: "6Gi"
+                env:
+                  - name: RAY_USAGE_STATS_ENABLED
+                    value: "0"
