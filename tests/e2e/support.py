@@ -5,6 +5,7 @@ import subprocess
 from time import sleep
 from codeflare_sdk import get_cluster
 from kubernetes import client, config
+from kubernetes.client import V1Toleration
 from codeflare_sdk.common.kubernetes_cluster.kube_api_helpers import (
     _kube_api_error_handling,
 )
@@ -145,6 +146,106 @@ def random_choice():
     return "".join(random.choices(alphabet, k=5))
 
 
+def get_master_taint_key(self):
+    """
+    Detect the actual master/control-plane taint key from nodes.
+    Returns the taint key if found, or defaults to control-plane.
+    """
+    try:
+        nodes = self.api_instance.list_node()
+        for node in nodes.items:
+            if node.spec.taints:
+                for taint in node.spec.taints:
+                    # Check if this is a master/control-plane taint
+                    if taint.key in [
+                        "node-role.kubernetes.io/master",
+                        "node-role.kubernetes.io/control-plane",
+                    ]:
+                        print(f"✓ Detected master taint key: {taint.key}")
+                        return taint.key
+        print("⚠ No master taint found, using default")
+    except Exception as e:
+        print(f"Warning: Could not detect master taint key: {e}")
+    # Default fallback
+    default_key = os.getenv("TOLERATION_KEY", "node-role.kubernetes.io/control-plane")
+    print(f"Using default/override toleration key: {default_key}")
+    return default_key
+
+
+# Removed ensure_worker_nodes_labeled - we don't modify shared cluster nodes
+# Instead, use ensure_nodes_labeled_for_flavors which checks existing labels
+
+
+def ensure_nodes_labeled_for_flavors(self, num_flavors, with_labels):
+    """
+    Ensure nodes are labeled appropriately for all ResourceFlavors that will be created.
+    This handles both default (worker-1=true) and non-default (ingress-ready=true) flavors.
+
+    NOTE: This function does NOT modify cluster nodes. It only checks if required labels exist.
+    If labels don't exist, the test will use whatever labels are available on the cluster.
+    For shared clusters, set WORKER_LABEL and CONTROL_LABEL env vars to match existing labels.
+    """
+    if not with_labels:
+        return
+
+    worker_label, worker_value = os.getenv("WORKER_LABEL", "worker-1=true").split("=")
+    control_label, control_value = os.getenv(
+        "CONTROL_LABEL", "ingress-ready=true"
+    ).split("=")
+
+    # Check what labels exist on worker nodes
+    try:
+        worker_nodes = self.api_instance.list_node(
+            label_selector="node-role.kubernetes.io/worker"
+        )
+
+        if not worker_nodes.items:
+            print("Warning: No worker nodes found")
+            return
+
+        # Check if worker label exists
+        has_worker_label = any(
+            node.metadata.labels
+            and node.metadata.labels.get(worker_label) == worker_value
+            for node in worker_nodes.items
+        )
+
+        # Check if control label exists
+        has_control_label = any(
+            node.metadata.labels
+            and node.metadata.labels.get(control_label) == control_value
+            for node in worker_nodes.items
+        )
+
+        if has_worker_label:
+            print(
+                f"✓ Found existing label {worker_label}={worker_value} on worker nodes"
+            )
+        else:
+            print(
+                f"⚠ Label {worker_label}={worker_value} not found - ResourceFlavor will target nodes with this label"
+            )
+            print(
+                f"  Consider setting WORKER_LABEL env var to match existing node labels"
+            )
+
+        if num_flavors > 1:
+            if has_control_label:
+                print(
+                    f"✓ Found existing label {control_label}={control_value} on worker nodes"
+                )
+            else:
+                print(
+                    f"⚠ Label {control_label}={control_value} not found - ResourceFlavor will target nodes with this label"
+                )
+                print(
+                    f"  Consider setting CONTROL_LABEL env var to match existing node labels"
+                )
+
+    except Exception as e:
+        print(f"Warning: Could not check existing labels: {e}")
+
+
 def create_namespace(self):
     try:
         self.namespace = f"test-ns-{random_choice()}"
@@ -283,9 +384,14 @@ def create_resource_flavor(
     control_label, control_value = os.getenv(
         "CONTROL_LABEL", "ingress-ready=true"
     ).split("=")
-    toleration_key = os.getenv(
-        "TOLERATION_KEY", "node-role.kubernetes.io/control-plane"
+    # Auto-detect toleration key from node taints, or use env var/default
+    # Only use env var if explicitly set, otherwise auto-detect
+    toleration_key = (
+        os.getenv("TOLERATION_KEY")
+        if os.getenv("TOLERATION_KEY")
+        else get_master_taint_key(self)
     )
+    print(f"Creating ResourceFlavor '{flavor}' with toleration key: {toleration_key}")
 
     node_labels = {}
     if with_labels:
@@ -448,6 +554,40 @@ def get_nodes_by_label(self, node_labels):
     label_selector = ",".join(f"{k}={v}" for k, v in node_labels.items())
     nodes = self.api_instance.list_node(label_selector=label_selector)
     return [node.metadata.name for node in nodes.items]
+
+
+def get_tolerations_from_flavor(self, flavor_name):
+    """
+    Extract tolerations from a ResourceFlavor and convert them to V1Toleration objects.
+    Returns a list of V1Toleration objects, or empty list if no tolerations found.
+    Also fixes toleration keys to match actual node taints if needed.
+    """
+    flavor_spec = get_flavor_spec(self, flavor_name)
+    tolerations_spec = flavor_spec.get("spec", {}).get("tolerations", [])
+
+    # Get the correct master taint key for this cluster
+    correct_master_key = get_master_taint_key(self)
+
+    tolerations = []
+    for tol_spec in tolerations_spec:
+        # Fix toleration key if it's a master/control-plane toleration with wrong key
+        toleration_key = tol_spec.get("key")
+        if toleration_key in [
+            "node-role.kubernetes.io/master",
+            "node-role.kubernetes.io/control-plane",
+        ]:
+            # Use the correct key detected from nodes
+            toleration_key = correct_master_key
+
+        toleration = V1Toleration(
+            key=toleration_key,
+            operator=tol_spec.get("operator", "Equal"),
+            value=tol_spec.get("value"),
+            effect=tol_spec.get("effect"),
+        )
+        tolerations.append(toleration)
+
+    return tolerations
 
 
 def assert_get_cluster_and_jobsubmit(

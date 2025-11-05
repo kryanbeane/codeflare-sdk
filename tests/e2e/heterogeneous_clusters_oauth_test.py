@@ -1,5 +1,3 @@
-from time import sleep
-import time
 from codeflare_sdk import (
     Cluster,
     ClusterConfiguration,
@@ -8,6 +6,7 @@ from codeflare_sdk import (
 
 from codeflare_sdk.common.kueue.kueue import list_local_queues
 
+import os
 import pytest
 
 from support import *
@@ -24,6 +23,9 @@ class TestHeterogeneousClustersOauth:
 
     def test_heterogeneous_clusters(self):
         create_namespace(self)
+        # Ensure nodes are labeled for ResourceFlavor targeting
+        # This handles both worker-1=true (first flavor) and ingress-ready=true (second flavor)
+        ensure_nodes_labeled_for_flavors(self, 2, with_labels=True)
         create_kueue_resources(self, 2, with_labels=True, with_tolerations=True)
         self.run_heterogeneous_clusters()
 
@@ -45,6 +47,11 @@ class TestHeterogeneousClustersOauth:
             )
             expected_nodes = get_nodes_by_label(self, node_labels)
 
+            # Extract tolerations from ResourceFlavor and apply them explicitly
+            # Kueue should apply them automatically, but this ensures they're set
+            tolerations = get_tolerations_from_flavor(self, flavor)
+            print(f"Extracted tolerations from flavor {flavor}: {tolerations}")
+
             print(f"Expected nodes: {expected_nodes}")
             cluster_name = f"test-ray-cluster-li-{flavor[-5:]}"
             queues = list_local_queues(namespace=self.namespace, flavors=[flavor])
@@ -57,20 +64,25 @@ class TestHeterogeneousClustersOauth:
                     num_workers=1,
                     head_cpu_requests="500m",
                     head_cpu_limits="500m",
+                    head_memory_requests=2,
+                    head_memory_limits=4,
                     worker_cpu_requests="500m",
                     worker_cpu_limits=1,
-                    worker_memory_requests=1,
+                    worker_memory_requests=2,
                     worker_memory_limits=4,
                     image=ray_image,
                     verify_tls=False,
                     local_queue=queue_name,
+                    # Apply tolerations from ResourceFlavor explicitly
+                    head_tolerations=tolerations if tolerations else None,
+                    worker_tolerations=tolerations if tolerations else None,
                 )
             )
-            cluster.up()
-            sleep(5)
+            cluster.apply()
+            # Wait for the cluster to be scheduled and ready, we don't need the dashboard for this check
+            cluster.wait_ready(dashboard_check=False)
             node_name = get_pod_node(self, self.namespace, cluster_name)
             print(f"Cluster {cluster_name}-{flavor} is running on node: {node_name}")
-            sleep(5)
             assert (
                 node_name in expected_nodes
             ), f"Node {node_name} is not in the expected nodes for flavor {flavor}."
