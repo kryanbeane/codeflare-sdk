@@ -212,7 +212,6 @@ def build_ray_cluster(cluster: "codeflare_sdk.ray.cluster.Cluster"):
     if cluster.config.write_to_file:
         return write_to_file(cluster, resource)  # Writes the file and returns its name
     else:
-        print(f"Yaml resources loaded for {cluster.config.name}")
         return resource  # Returns the Resource as a dict
 
 
@@ -472,7 +471,7 @@ def add_queue_label(cluster: "codeflare_sdk.ray.cluster.Cluster", labels: dict):
     elif not local_queue_exists(cluster):
         # ValueError removed to pass validation to validating admission policy
         print(
-            "local_queue provided does not exist or is not in this namespace. Please provide the correct local_queue name in Cluster Configuration"
+            "local_queue provided does not exist or is not in this workspace. Please provide the correct local_queue name in Cluster Configuration"
         )
         return
     labels.update({"kueue.x-k8s.io/queue-name": lq_name})

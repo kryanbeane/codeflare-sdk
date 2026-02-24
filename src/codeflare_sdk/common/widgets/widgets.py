@@ -133,7 +133,7 @@ class RayClusterManagerWidgets:
         with self.user_output:
             self.user_output.clear_output()
             print(
-                f"Cluster {cluster_name} in the {self.namespace} namespace was deleted successfully."
+                f"Cluster {cluster_name} in the {self.namespace} workspace was deleted successfully."
             )
 
         # Refresh the dataframe
@@ -204,7 +204,7 @@ class RayClusterManagerWidgets:
             self.refresh_data_button.close()
             with self.raycluster_data_output:
                 self.raycluster_data_output.clear_output()
-                print(f"No clusters found in the {self.namespace} namespace.")
+                print(f"No clusters found in the {self.namespace} workspace.")
         else:
             # Store the current selection if it still exists (Was not previously deleted).
             selected_cluster = (
@@ -374,7 +374,7 @@ def view_clusters(namespace: str = None):
 
     ray_clusters_df = _fetch_cluster_data(namespace)
     if ray_clusters_df.empty:
-        print(f"No clusters found in the {namespace} namespace.")
+        print(f"No clusters found in the {namespace} workspace.")
         return
 
     # Initialize the RayClusterManagerWidgets class
