@@ -133,7 +133,7 @@ class RayClusterManagerWidgets:
         with self.user_output:
             self.user_output.clear_output()
             print(
-                f"Cluster {cluster_name} in the {self.namespace} workspace was deleted successfully."
+                f"Cluster {cluster_name} in the {self.namespace} namespace was deleted successfully."
             )
 
         # Refresh the dataframe
@@ -204,7 +204,7 @@ class RayClusterManagerWidgets:
             self.refresh_data_button.close()
             with self.raycluster_data_output:
                 self.raycluster_data_output.clear_output()
-                print(f"No clusters found in the {self.namespace} workspace.")
+                print(f"No clusters found in the {self.namespace} namespace.")
         else:
             # Store the current selection if it still exists (Was not previously deleted).
             selected_cluster = (
@@ -299,18 +299,24 @@ def cluster_apply_down_buttons(
     def on_apply_button_clicked(b):  # Handle the apply button click event
         with output:
             output.clear_output()
-            # Use shorter TLS timeout (60s) for widget button clicks to avoid blocking UI
-            # Users who need full TLS wait can use wait_ready() checkbox or call apply() directly
-            cluster.apply(timeout=60)
+            try:
+                # Use shorter TLS timeout (60s) for widget button clicks to avoid blocking UI
+                # Users who need full TLS wait can use wait_ready() checkbox or call apply() directly
+                cluster.apply(timeout=60)
 
-            # If the wait_ready Checkbox is clicked(value == True) trigger the wait_ready function
-            if wait_ready_check.value:
-                cluster.wait_ready()
+                # If the wait_ready Checkbox is clicked(value == True) trigger the wait_ready function
+                if wait_ready_check.value:
+                    cluster.wait_ready()
+            except RuntimeError:
+                pass
 
     def on_down_button_clicked(b):  # Handle the down button click event
         with output:
             output.clear_output()
-            cluster.down()
+            try:
+                cluster.down()
+            except RuntimeError:
+                pass
 
     apply_button.on_click(on_apply_button_clicked)
     delete_button.on_click(on_down_button_clicked)
@@ -374,7 +380,7 @@ def view_clusters(namespace: str = None):
 
     ray_clusters_df = _fetch_cluster_data(namespace)
     if ray_clusters_df.empty:
-        print(f"No clusters found in the {namespace} workspace.")
+        print(f"No clusters found in the {namespace} namespace.")
         return
 
     # Initialize the RayClusterManagerWidgets class

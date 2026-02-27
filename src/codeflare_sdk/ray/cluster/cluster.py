@@ -117,10 +117,10 @@ class Cluster:
         if self.config.namespace is None:
             self.config.namespace = get_current_namespace()
             if self.config.namespace is None:
-                print("Please specify workspace=<your_current_workspace>")
+                print("Please specify namespace=<your_current_namespace>")
             elif type(self.config.namespace) is not str:
                 raise TypeError(
-                    f"Workspace {self.config.namespace} is of type {type(self.config.namespace)}. Check your Kubernetes Authentication."
+                    f"Namespace {self.config.namespace} is of type {type(self.config.namespace)}. Check your Kubernetes Authentication."
                 )
         return build_ray_cluster(self)
 
@@ -307,12 +307,11 @@ class Cluster:
         except ApiException as e:
             if e.status == 404:
                 raise RuntimeError(
-                    "RayCluster CustomResourceDefinition unavailable contact your administrator."
+                    "RayCluster CustomResourceDefinition unavailable. "
+                    "Contact your administrator."
                 )
-            else:
-                raise RuntimeError(
-                    "Failed to get RayCluster CustomResourceDefinition: " + str(e)
-                )
+            _kube_api_error_handling(e)
+            raise RuntimeError("Failed to get RayCluster CustomResourceDefinition.")
 
     def down(self):
         """

@@ -159,7 +159,7 @@ def test_view_clusters(mocker, capsys):
     result = cf_widgets.view_clusters()
     captured = capsys.readouterr()
     assert mock_fetch_cluster_data.return_value.empty
-    assert "No clusters found in the default workspace." in captured.out
+    assert "No clusters found in the default namespace." in captured.out
     assert result is None
 
     # Prepare to run view_clusters with a test DataFrame
@@ -395,7 +395,7 @@ def test_ray_cluster_manager_widgets_init(mocker, capsys):
 
     captured = capsys.readouterr()
     assert (
-        f"Cluster test-cluster-1 in the {namespace} workspace was deleted successfully."
+        f"Cluster test-cluster-1 in the {namespace} namespace was deleted successfully."
         in captured.out
     )
 

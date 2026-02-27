@@ -21,17 +21,18 @@ import json
 import executing
 from kubernetes import client, config
 
+
 ERROR_MESSAGES = {
-    "Not Found": "The requested resource could not be located.\n"
-    "Please verify the resource name and workspace.",
-    "Unauthorized": "Access to the API is unauthorized.\n"
+    401: "Access to the API is unauthorized.\n"
     "Check your credentials or permissions.",
-    "Forbidden": "Access denied to the Kubernetes resource.\n"
-    "Ensure your role has sufficient permissions for this operation.",
-    "Conflict": "A conflict occurred with the RayCluster resource.\n"
+    403: "Access denied:\n"
+    "Ensure your role has sufficient permissions and that you are logged in to the correct cluster.",
+    404: "The requested resource could not be located.\n"
+    "Please verify the resource name and namespace.",
+    409: "A conflict occurred with the RayCluster resource.\n"
     "Only one RayCluster with the same name is allowed. "
     "Please delete or rename the existing RayCluster before creating a new one with the desired name.",
-    "Unprocessable Entity": "The request was rejected because something in your cluster configuration is invalid. Fix the value and try again.",
+    422: "The request was rejected because something in your cluster configuration is invalid. Fix the value and try again.",
 }
 
 ERROR_MESSAGES_FALLBACK = (
@@ -82,22 +83,19 @@ def _kube_api_error_handling(
 
     if isinstance(e, client.ApiException):
         detail = _format_api_error_body(e.body)
-        # For 422 with our friendly cluster-name message, skip the generic line to avoid repetition
-        if (
-            e.reason == "Unprocessable Entity"
-            and detail
-            and "Cluster name is invalid" in detail
-        ):
+        status_code = getattr(e, "status", None)
+
+        if status_code == 422 and detail and "Cluster name is invalid" in detail:
             print_message(detail)
         else:
-            message = ERROR_MESSAGES.get(e.reason, ERROR_MESSAGES_FALLBACK)
+            message = ERROR_MESSAGES.get(status_code, ERROR_MESSAGES_FALLBACK)
             if detail:
                 full_message = f"{message}\n{detail}"
             else:
                 # Ensure we always show something (reason and status) when no body detail
                 status_info = f"Reason: {e.reason}"
-                if hasattr(e, "status") and e.status is not None:
-                    status_info += f" (HTTP {e.status})"
+                if status_code is not None:
+                    status_info += f" (HTTP {status_code})"
                 full_message = f"{message}\n{status_info}."
             print_message(full_message)
 

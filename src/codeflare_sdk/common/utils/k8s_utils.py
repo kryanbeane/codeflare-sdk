@@ -21,8 +21,8 @@ def get_current_namespace():  # pragma: no cover
             active_context = file.readline().strip("\n")
             return active_context
         except Exception as e:
-            print("Unable to find current workspace")
-    print("Trying to gather workspace from current context")
+            print("Unable to find current namespace")
+    print("Trying to gather namespace from current context")
     try:
         _, active_context = config.list_kube_config_contexts(config_check())
     except Exception as e:

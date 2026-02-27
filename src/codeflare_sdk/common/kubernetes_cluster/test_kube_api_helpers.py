@@ -81,6 +81,15 @@ class TestKubeApiErrorHandling:
         assert any("Details: RayCluster xyz not found" in c for c in call_args)
 
     @patch("builtins.print")
+    def test_403_prints_forbidden_message(self, mock_print):
+        """403 uses status-code lookup so it gets the right message (not fallback)."""
+        api_exc = client.ApiException(status=403, reason="Forbidden")
+        api_exc.body = None
+        _kube_api_error_handling(api_exc)
+        call_args = [str(c) for c in mock_print.call_args_list]
+        assert any("Access denied:" in c for c in call_args)
+
+    @patch("builtins.print")
     def test_api_exception_with_no_body_prints_reason_and_status(self, mock_print):
         api_exc = client.ApiException(status=500, reason="Internal Server Error")
         api_exc.body = None

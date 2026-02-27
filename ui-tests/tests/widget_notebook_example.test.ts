@@ -110,7 +110,7 @@ test.describe("Widget Functionality", () => {
     await interactWithWidget(page, viewClustersCellIndex, 'button:has-text("Delete Cluster")', async (button) => {
       await button.click();
       // Wait for deletion confirmation - increase timeout as cluster deletion can take time
-      const successMessage = await page.waitForSelector(`text=Cluster widgettest in the ${namespace} workspace was deleted successfully.`, { timeout: 30000 });
+      const successMessage = await page.waitForSelector(`text=Cluster widgettest in the ${namespace} namespace was deleted successfully.`, { timeout: 30000 });
       expect(successMessage).not.toBeNull();
     });
   });

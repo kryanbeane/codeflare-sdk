@@ -900,7 +900,7 @@ def test_cluster_namespace_handling(mocker, capsys):
     cluster = Cluster(config)
     captured = capsys.readouterr()
     # Verify the warning message was printed
-    assert "Please specify workspace=<your_current_workspace>" in captured.out
+    assert "Please specify namespace=<your_current_namespace>" in captured.out
     assert cluster.config.namespace is None
 
 
@@ -989,7 +989,7 @@ def test_cluster_namespace_type_error(mocker):
     # This should raise TypeError because get_current_namespace returns int
     with pytest.raises(
         TypeError,
-        match="Workspace 12345 is of type.*Check your Kubernetes Authentication",
+        match="Namespace 12345 is of type.*Check your Kubernetes Authentication",
     ):
         Cluster(config)
 
