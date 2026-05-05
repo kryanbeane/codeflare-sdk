@@ -9,7 +9,7 @@ on:
         type: string
         default: ''
       new_ray_version:
-        description: 'New Ray version (e.g., 2.54.1) -- updates RAY_VERSION, pyproject.toml, and rayVersion in test YAMLs'
+        description: 'New Ray version (e.g., 2.54.1) -- updates RAY_VERSION and pyproject.toml'
         required: false
         type: string
         default: ''
@@ -76,28 +76,8 @@ jobs:
       - name: Capture current versions
         id: current
         run: |
-          # Version constants
           echo "ray_version=$(grep 'RAY_VERSION = ' src/codeflare_sdk/common/utils/constants.py | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
           echo "sdk_version=$(grep -E '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
-
-          # Current image tags from constants.py comments
-          echo "py312_cuda_tag=$(grep -oP 'ray:\K[0-9]+\.[0-9]+\.[0-9]+-py312-cu[0-9]+' src/codeflare_sdk/common/utils/constants.py | head -1)" >> $GITHUB_OUTPUT
-          echo "py311_cuda_tag=$(grep -oP 'ray:\K[0-9]+\.[0-9]+\.[0-9]+-py311-cu[0-9]+' src/codeflare_sdk/common/utils/constants.py | head -1)" >> $GITHUB_OUTPUT
-
-          # Current ROCm tags from docs
-          PY312_ROCM=$(grep -oP 'ray:\K[0-9]+\.[0-9]+\.[0-9]+-py312-rocm[0-9]+' docs/sphinx/user-docs/cluster-configuration.rst 2>/dev/null | head -1)
-          PY311_ROCM=$(grep -oP 'ray:\K[0-9]+\.[0-9]+\.[0-9]+-py311-rocm[0-9]+' docs/sphinx/user-docs/cluster-configuration.rst 2>/dev/null | head -1)
-          echo "py312_rocm_tag=${PY312_ROCM}" >> $GITHUB_OUTPUT
-          echo "py311_rocm_tag=${PY311_ROCM}" >> $GITHUB_OUTPUT
-
-          echo "::group::Current values"
-          echo "Ray version: $(grep 'RAY_VERSION = ' src/codeflare_sdk/common/utils/constants.py)"
-          echo "SDK version: $(grep -E '^version = ' pyproject.toml | head -1)"
-          echo "py312 CUDA tag: $(grep -oP 'ray:\K[0-9]+\.[0-9]+\.[0-9]+-py312-cu[0-9]+' src/codeflare_sdk/common/utils/constants.py | head -1)"
-          echo "py311 CUDA tag: $(grep -oP 'ray:\K[0-9]+\.[0-9]+\.[0-9]+-py311-cu[0-9]+' src/codeflare_sdk/common/utils/constants.py | head -1)"
-          echo "py312 ROCm tag: ${PY312_ROCM}"
-          echo "py311 ROCm tag: ${PY311_ROCM}"
-          echo "::endgroup::"
 
       - name: Update version constants
         run: |
@@ -119,12 +99,6 @@ jobs:
             echo "Updated SDK version to ${{ github.event.inputs.new_sdk_version }}"
           fi
 
-          # Update rayVersion in test YAMLs
-          if [ -n "${{ github.event.inputs.new_ray_version }}" ]; then
-            find tests/ -name "*.yaml" -exec sed -i "s/rayVersion: [0-9]\+\.[0-9]\+\.[0-9]\+/rayVersion: ${{ github.event.inputs.new_ray_version }}/g" {} \;
-            echo "Updated rayVersion in test YAMLs"
-          fi
-
       - name: Update runtime image SHAs
         run: |
           # Update py312 CUDA SHA in constants.py
@@ -142,78 +116,46 @@ jobs:
       - name: Update py312 CUDA image tags
         if: inputs.py312_cuda_tag != ''
         run: |
-          OLD_TAG="${{ steps.current.outputs.py312_cuda_tag }}"
           NEW_TAG="${{ github.event.inputs.py312_cuda_tag }}"
+          PATTERN='[0-9]\+\.[0-9]\+\.[0-9]\+-py312-cu[0-9]\+'
 
-          if [ -z "${OLD_TAG}" ]; then
-            echo "::warning::Could not find current py312 CUDA tag in constants.py comments -- skipping tag replacement"
-            exit 0
-          fi
+          echo "Replacing all py312 CUDA tags with: ${NEW_TAG}"
 
-          echo "Replacing py312 CUDA tag: ${OLD_TAG} -> ${NEW_TAG}"
-
-          # constants.py comments
-          sed -i "s|${OLD_TAG}|${NEW_TAG}|g" src/codeflare_sdk/common/utils/constants.py
-
-          # Notebooks
-          find demo-notebooks/ -name "*.ipynb" -exec sed -i "s|${OLD_TAG}|${NEW_TAG}|g" {} \;
-
-          # Docs
-          find docs/ -name "*.rst" -exec sed -i "s|${OLD_TAG}|${NEW_TAG}|g" {} \;
+          sed -i "s|${PATTERN}|${NEW_TAG}|g" src/codeflare_sdk/common/utils/constants.py
+          find demo-notebooks/ -name "*.ipynb" -exec sed -i "s|${PATTERN}|${NEW_TAG}|g" {} \;
+          find docs/ -name "*.rst" -exec sed -i "s|${PATTERN}|${NEW_TAG}|g" {} \;
 
       - name: Update py312 ROCm image tags
         if: inputs.py312_rocm_tag != ''
         run: |
-          OLD_TAG="${{ steps.current.outputs.py312_rocm_tag }}"
           NEW_TAG="${{ github.event.inputs.py312_rocm_tag }}"
+          PATTERN='[0-9]\+\.[0-9]\+\.[0-9]\+-py312-rocm[0-9]\+'
 
-          if [ -z "${OLD_TAG}" ]; then
-            echo "::warning::Could not find current py312 ROCm tag in docs -- skipping tag replacement"
-            exit 0
-          fi
+          echo "Replacing all py312 ROCm tags with: ${NEW_TAG}"
 
-          echo "Replacing py312 ROCm tag: ${OLD_TAG} -> ${NEW_TAG}"
-
-          # Docs only
-          find docs/ -name "*.rst" -exec sed -i "s|${OLD_TAG}|${NEW_TAG}|g" {} \;
+          find docs/ -name "*.rst" -exec sed -i "s|${PATTERN}|${NEW_TAG}|g" {} \;
 
       - name: Update py311 CUDA image tags
         if: inputs.py311_cuda_tag != ''
         run: |
-          OLD_TAG="${{ steps.current.outputs.py311_cuda_tag }}"
           NEW_TAG="${{ github.event.inputs.py311_cuda_tag }}"
+          PATTERN='[0-9]\+\.[0-9]\+\.[0-9]\+-py311-cu[0-9]\+'
 
-          if [ -z "${OLD_TAG}" ]; then
-            echo "::warning::Could not find current py311 CUDA tag in constants.py comments -- skipping tag replacement"
-            exit 0
-          fi
+          echo "Replacing all py311 CUDA tags with: ${NEW_TAG}"
 
-          echo "Replacing py311 CUDA tag: ${OLD_TAG} -> ${NEW_TAG}"
-
-          # constants.py comments
-          sed -i "s|${OLD_TAG}|${NEW_TAG}|g" src/codeflare_sdk/common/utils/constants.py
-
-          # Notebooks
-          find demo-notebooks/ -name "*.ipynb" -exec sed -i "s|${OLD_TAG}|${NEW_TAG}|g" {} \;
-
-          # Docs
-          find docs/ -name "*.rst" -exec sed -i "s|${OLD_TAG}|${NEW_TAG}|g" {} \;
+          sed -i "s|${PATTERN}|${NEW_TAG}|g" src/codeflare_sdk/common/utils/constants.py
+          find demo-notebooks/ -name "*.ipynb" -exec sed -i "s|${PATTERN}|${NEW_TAG}|g" {} \;
+          find docs/ -name "*.rst" -exec sed -i "s|${PATTERN}|${NEW_TAG}|g" {} \;
 
       - name: Update py311 ROCm image tags
         if: inputs.py311_rocm_tag != ''
         run: |
-          OLD_TAG="${{ steps.current.outputs.py311_rocm_tag }}"
           NEW_TAG="${{ github.event.inputs.py311_rocm_tag }}"
+          PATTERN='[0-9]\+\.[0-9]\+\.[0-9]\+-py311-rocm[0-9]\+'
 
-          if [ -z "${OLD_TAG}" ]; then
-            echo "::warning::Could not find current py311 ROCm tag in docs -- skipping tag replacement"
-            exit 0
-          fi
+          echo "Replacing all py311 ROCm tags with: ${NEW_TAG}"
 
-          echo "Replacing py311 ROCm tag: ${OLD_TAG} -> ${NEW_TAG}"
-
-          # Docs only
-          find docs/ -name "*.rst" -exec sed -i "s|${OLD_TAG}|${NEW_TAG}|g" {} \;
+          find docs/ -name "*.rst" -exec sed -i "s|${PATTERN}|${NEW_TAG}|g" {} \;
 
       - name: Validate updates
         run: |
@@ -263,9 +205,7 @@ jobs:
           fi
 
           if [ -n "${{ github.event.inputs.py312_cuda_tag }}" ]; then
-            if [ -z "${{ steps.current.outputs.py312_cuda_tag }}" ]; then
-              echo "⚠ py312 CUDA tag -- old tag not found, replacement was skipped"
-            elif grep -rq "${{ github.event.inputs.py312_cuda_tag }}" src/codeflare_sdk/common/utils/constants.py demo-notebooks/ docs/; then
+            if grep -rq "${{ github.event.inputs.py312_cuda_tag }}" src/codeflare_sdk/common/utils/constants.py demo-notebooks/ docs/; then
               echo "✓ py312 CUDA tag updated"
             else
               echo "✗ py312 CUDA tag not found in expected files"
@@ -274,9 +214,7 @@ jobs:
           fi
 
           if [ -n "${{ github.event.inputs.py311_cuda_tag }}" ]; then
-            if [ -z "${{ steps.current.outputs.py311_cuda_tag }}" ]; then
-              echo "⚠ py311 CUDA tag -- old tag not found, replacement was skipped"
-            elif grep -rq "${{ github.event.inputs.py311_cuda_tag }}" src/codeflare_sdk/common/utils/constants.py demo-notebooks/ docs/; then
+            if grep -rq "${{ github.event.inputs.py311_cuda_tag }}" src/codeflare_sdk/common/utils/constants.py demo-notebooks/ docs/; then
               echo "✓ py311 CUDA tag updated"
             else
               echo "✗ py311 CUDA tag not found in expected files"
@@ -285,24 +223,18 @@ jobs:
           fi
 
           if [ -n "${{ github.event.inputs.py312_rocm_tag }}" ]; then
-            if [ -z "${{ steps.current.outputs.py312_rocm_tag }}" ]; then
-              echo "⚠ py312 ROCm tag -- old tag not found in docs, replacement was skipped"
-            elif grep -rq "${{ github.event.inputs.py312_rocm_tag }}" docs/; then
+            if grep -rq "${{ github.event.inputs.py312_rocm_tag }}" docs/; then
               echo "✓ py312 ROCm tag updated"
             else
-              echo "✗ py312 ROCm tag not found in docs"
-              FAILED=1
+              echo "⚠ py312 ROCm tag not found in docs (no existing py312 ROCm references to replace)"
             fi
           fi
 
           if [ -n "${{ github.event.inputs.py311_rocm_tag }}" ]; then
-            if [ -z "${{ steps.current.outputs.py311_rocm_tag }}" ]; then
-              echo "⚠ py311 ROCm tag -- old tag not found in docs, replacement was skipped"
-            elif grep -rq "${{ github.event.inputs.py311_rocm_tag }}" docs/; then
+            if grep -rq "${{ github.event.inputs.py311_rocm_tag }}" docs/; then
               echo "✓ py311 ROCm tag updated"
             else
-              echo "✗ py311 ROCm tag not found in docs"
-              FAILED=1
+              echo "⚠ py311 ROCm tag not found in docs (no existing py311 ROCm references to replace)"
             fi
           fi
 
@@ -349,19 +281,19 @@ jobs:
           fi
           if [ -n "${{ github.event.inputs.py312_cuda_tag }}" ]; then
             COMMIT_MSG="${COMMIT_MSG}
-          - py312 CUDA tag: ${{ steps.current.outputs.py312_cuda_tag }} -> ${{ github.event.inputs.py312_cuda_tag }}"
+          - py312 CUDA tag -> ${{ github.event.inputs.py312_cuda_tag }}"
           fi
           if [ -n "${{ github.event.inputs.py312_rocm_tag }}" ]; then
             COMMIT_MSG="${COMMIT_MSG}
-          - py312 ROCm tag: ${{ steps.current.outputs.py312_rocm_tag }} -> ${{ github.event.inputs.py312_rocm_tag }}"
+          - py312 ROCm tag -> ${{ github.event.inputs.py312_rocm_tag }}"
           fi
           if [ -n "${{ github.event.inputs.py311_cuda_tag }}" ]; then
             COMMIT_MSG="${COMMIT_MSG}
-          - py311 CUDA tag: ${{ steps.current.outputs.py311_cuda_tag }} -> ${{ github.event.inputs.py311_cuda_tag }}"
+          - py311 CUDA tag -> ${{ github.event.inputs.py311_cuda_tag }}"
           fi
           if [ -n "${{ github.event.inputs.py311_rocm_tag }}" ]; then
             COMMIT_MSG="${COMMIT_MSG}
-          - py311 ROCm tag: ${{ steps.current.outputs.py311_rocm_tag }} -> ${{ github.event.inputs.py311_rocm_tag }}"
+          - py311 ROCm tag -> ${{ github.event.inputs.py311_rocm_tag }}"
           fi
 
           git commit -m "${COMMIT_MSG}"
@@ -402,22 +334,22 @@ jobs:
 
           if [ -n "${{ github.event.inputs.py312_cuda_tag }}" ]; then
             CHANGES="${CHANGES}
-          - **py312 CUDA tag**: \`${{ steps.current.outputs.py312_cuda_tag }}\` → \`${{ github.event.inputs.py312_cuda_tag }}\`"
+          - **py312 CUDA tag**: → \`${{ github.event.inputs.py312_cuda_tag }}\`"
           fi
 
           if [ -n "${{ github.event.inputs.py312_rocm_tag }}" ]; then
             CHANGES="${CHANGES}
-          - **py312 ROCm tag**: \`${{ steps.current.outputs.py312_rocm_tag }}\` → \`${{ github.event.inputs.py312_rocm_tag }}\`"
+          - **py312 ROCm tag**: → \`${{ github.event.inputs.py312_rocm_tag }}\`"
           fi
 
           if [ -n "${{ github.event.inputs.py311_cuda_tag }}" ]; then
             CHANGES="${CHANGES}
-          - **py311 CUDA tag**: \`${{ steps.current.outputs.py311_cuda_tag }}\` → \`${{ github.event.inputs.py311_cuda_tag }}\`"
+          - **py311 CUDA tag**: → \`${{ github.event.inputs.py311_cuda_tag }}\`"
           fi
 
           if [ -n "${{ github.event.inputs.py311_rocm_tag }}" ]; then
             CHANGES="${CHANGES}
-          - **py311 ROCm tag**: \`${{ steps.current.outputs.py311_rocm_tag }}\` → \`${{ github.event.inputs.py311_rocm_tag }}\`"
+          - **py311 ROCm tag**: → \`${{ github.event.inputs.py311_rocm_tag }}\`"
           fi
 
           PR_BODY=$(cat <<EOF
