@@ -110,7 +110,7 @@ jobs:
       - name: Regenerate poetry.lock
         if: inputs.new_ray_version != '' || inputs.new_sdk_version != ''
         run: |
-          poetry lock --no-update
+          poetry lock
           echo "Regenerated poetry.lock"
 
       - name: Update runtime image SHAs
